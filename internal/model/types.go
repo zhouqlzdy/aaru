@@ -86,6 +86,8 @@ type ReleaseStage struct {
 	EnvCode        string     `gorm:"size:64" json:"env_code"`
 	EnvName        string     `gorm:"size:128" json:"env_name"`
 	PromotionOrder int        `json:"promotion_order"`
+		GateType       string     `gorm:"size:32;default:manual" json:"gate_type,omitempty"`
+
 	Status         string     `gorm:"size:32;default:pending" json:"status"`
 	ApprovedByID   *uint      `json:"approved_by_id,omitempty"`
 	ApprovedBy     *User      `gorm:"foreignKey:ApprovedByID" json:"approved_by,omitempty"`

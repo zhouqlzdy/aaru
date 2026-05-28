@@ -74,6 +74,7 @@ func (r *ReleaseService) CreateRelease(title, duCode, version string, createdByI
 				EnvCode:        node.EnvCode,
 				EnvName:        node.EnvName,
 				PromotionOrder: i,
+				GateType:       node.GateType,
 				Status:         "pending",
 			})
 		}
@@ -127,6 +128,7 @@ func (r *ReleaseService) StartRelease(releaseID, userID uint) (*model.Release, e
 					if *release.Stages[i].NodeID == src {
 						release.Stages[i].Status = "in_progress"
 						r.store.DB().Save(&release.Stages[i])
+						r.autoProgress(releaseID, release.Stages[i].ID)
 					}
 				}
 			}
@@ -139,6 +141,50 @@ func (r *ReleaseService) StartRelease(releaseID, userID uint) (*model.Release, e
 	return release, nil
 }
 
+
+func (r *ReleaseService) autoProgress(releaseID uint, stageID uint) {
+	var stage model.ReleaseStage
+	if err := r.store.DB().First(&stage, stageID).Error; err != nil {
+		return
+	}
+	if stage.Status != "in_progress" || stage.GateType != "auto" {
+		return
+	}
+	stage.Status = "approved"
+	t := time.Now()
+	stage.ApprovedAt = &t
+	r.store.DB().Save(&stage)
+	r.activateChildren(releaseID, *stage.NodeID)
+}
+
+func (r *ReleaseService) activateChildren(releaseID uint, nodeID uint) {
+	release, _ := r.store.GetReleaseWithStages(releaseID)
+	if release == nil || release.BlueprintID == nil {
+		return
+	}
+	children, _ := r.bpService.GetChildNodeIDs(*release.BlueprintID, nodeID)
+	for _, childID := range children {
+		parents, _ := r.bpService.GetParentNodeIDs(*release.BlueprintID, childID)
+		allApproved := true
+		for _, pid := range parents {
+			for j := range release.Stages {
+				if release.Stages[j].NodeID != nil && *release.Stages[j].NodeID == pid &&
+					release.Stages[j].Status != "approved" {
+					allApproved = false
+				}
+			}
+		}
+		if allApproved {
+			for j := range release.Stages {
+				if release.Stages[j].NodeID != nil && *release.Stages[j].NodeID == childID {
+					release.Stages[j].Status = "in_progress"
+					r.store.DB().Save(&release.Stages[j])
+					r.autoProgress(releaseID, release.Stages[j].ID)
+				}
+			}
+		}
+	}
+}
 func (r *ReleaseService) ApproveStage(stageID, userID uint, comment string) (*model.Release, error) {
 	if !r.permSvc.CanAction(userID, "approve") {
 		return nil, fmt.Errorf("permission denied")
@@ -180,6 +226,7 @@ func (r *ReleaseService) ApproveStage(stageID, userID uint, comment string) (*mo
 					if release.Stages[j].NodeID != nil && *release.Stages[j].NodeID == childID {
 						release.Stages[j].Status = "in_progress"
 						r.store.DB().Save(&release.Stages[j])
+						r.autoProgress(release.ID, release.Stages[j].ID)
 					}
 				}
 			}

@@ -419,7 +419,7 @@ async function loadPageBlueprintEditor(bpId) {
   }
 
   body.innerHTML = `<div style="display:grid;grid-template-columns:1fr 300px;gap:16px;height:calc(100vh - 140px)">
-    <div>
+    <div style="min-width:0;overflow:hidden">
       <div style="margin-bottom:8px;display:flex;gap:8px">
         <button class="btn btn-secondary btn-sm" onclick="addDagNode()">+ 添加节点</button>
         <button class="btn btn-secondary btn-sm" onclick="autoLayout()">自动排版</button>
@@ -448,8 +448,23 @@ function renderDAG() {
   const svg = document.getElementById('dag-svg');
   if (!svg) return;
   const canvas = document.getElementById('dag-canvas');
-  const w = canvas.clientWidth, h = canvas.clientHeight;
-  svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  // Compute content bounds from all nodes, with padding
+  let minX = 0, minY = 0, maxX = canvas.clientWidth, maxY = canvas.clientHeight;
+  if (dagState.nodes.length > 0) {
+    minX = Math.min(...dagState.nodes.map(n=>n.pos_x));
+    minY = Math.min(...dagState.nodes.map(n=>n.pos_y));
+    maxX = Math.max(...dagState.nodes.map(n=>n.pos_x + (n._w||80)));
+    maxY = Math.max(...dagState.nodes.map(n=>n.pos_y + 30));
+    const pad = 120;
+    minX = Math.min(0, minX - pad);
+    minY = Math.min(0, minY - pad);
+    maxX = Math.max(canvas.clientWidth, maxX + pad);
+    maxY = Math.max(canvas.clientHeight, maxY + pad);
+  }
+  const vw = maxX - minX, vh = maxY - minY;
+  svg.setAttribute('viewBox', `${minX} ${minY} ${vw} ${vh}`);
+  svg.setAttribute('width', vw);
+  svg.setAttribute('height', vh);
 
   dagState.nodes.forEach(n => {
     const label = n.env_name || n.env_code || '';
@@ -511,9 +526,21 @@ function updateNodeConfig() {
   const panel = document.getElementById('node-config');
   if (!panel) return;
   if (!dagState.selectedNode) {
-    panel.innerHTML = '<span style="color:var(--text-muted)">点击画布中的节点进行配置<br><br><strong>操作:</strong><br>· 拖拽节点移动位置<br>· 点击节点选中<br>· Shift+点击两个节点创建边</span>';
+    if (dagState.selectedEdge) {
+      const ed = dagState.edges.find(e=>e.id===dagState.selectedEdge);
+      const from = dagState.nodes.find(n=>n.id===ed?.from_node_id);
+      const to = dagState.nodes.find(n=>n.id===ed?.to_node_id);
+      if (from && to) {
+        panel.innerHTML = '<h4 style="font-size:13px;font-weight:600;margin-bottom:8px">选中边</h4><p style="font-size:13px;margin-bottom:12px">'+escapeHtml(from.env_name||from.env_code)+' → '+escapeHtml(to.env_name||to.env_code)+'</p><button class="btn btn-danger btn-sm" onclick="deleteDagEdge('+dagState.selectedEdge+')">删除此边</button>';
+      } else {
+        panel.innerHTML = '<span style="color:var(--text-muted)">点击画布中的节点进行配置<br><br><strong>操作:</strong><br>· 拖拽空白平移画布<br>· 点击节点选中<br>· Shift+点击两个节点创建边<br>· 点击边选中后右侧删除</span>';
+      }
+    } else {
+      panel.innerHTML = '<span style="color:var(--text-muted)">点击画布中的节点进行配置<br><br><strong>操作:</strong><br>· 拖拽空白平移画布<br>· 点击节点选中<br>· Shift+点击两个节点创建边<br>· 点击边选中后右侧删除</span>';
+    }
     return;
   }
+
   const n = dagState.nodes.find(x=>x.id===dagState.selectedNode);
   if (!n) return;
   const webhookUrl = n.webhook_token ? `http://localhost:8080/api/hooks/promote/__STAGE_ID__?token=${escapeHtml(n.webhook_token)}` : '(保存后生成)';
@@ -522,9 +549,10 @@ function updateNodeConfig() {
     <div class="form-group"><label class="form-label">环境</label><select class="form-control" onchange="updateNodeProp(\'env\',this.value)"><option value="">选择</option>${envCache.map(e=>`<option value="${escapeHtml(e.Env)}" ${e.Env===n.env_code?'selected':''}>${escapeHtml(e.name)}</option>`).join('')}</select></div>
     <div class="form-group"><label class="form-label">晋级门槛类型</label><select class="form-control" onchange="updateNodeProp(\'gate_type\',this.value)">
       <option value="manual" ${n.gate_type==='manual'?'selected':''}>人工审批</option>
+      <option value="auto" ${n.gate_type==='auto'?'selected':''}>无条件晋级</option>
       <option value="api_hook" ${n.gate_type==='api_hook'?'selected':''}>API Hook（外部系统回调）</option>
     </select></div>
-    ${n.gate_type==='manual'?`<div class="form-group"><label class="form-label">审批角色（自动创建）</label><code style="display:block;padding:8px;background:#f0fdf4;border-radius:4px;font-size:12px">approver-${escapeHtml(n.env_code||'??')}</code><span style="font-size:11px;color:var(--text-muted)">角色将自动创建并拥有approve权限。在权限管理页面为此角色添加用户。</span></div>`:''}
+    ${n.gate_type==='manual'?`<div class="form-group"><label class="form-label">审批角色（自动创建）</label><code style="display:block;padding:8px;background:#f0fdf4;border-radius:4px;font-size:12px">approver-${escapeHtml(n.env_code||'??')}</code><span style="font-size:11px;color:var(--text-muted)">角色将自动创建并拥有approve权限。在权限管理页面为此角色添加用户。</span></div>`:''}${n.gate_type==='auto'?`<div class="form-group"><span style="font-size:12px;color:#059669">该阶段父环境审批通过后自动晋级，无需人工干预。</span></div>`:''}
     ${n.gate_type==='api_hook'?`<div class="form-group"><label class="form-label">Webhook URL（外部系统调用此地址晋级）</label><code style="display:block;padding:8px;background:#f5f5f4;border-radius:4px;font-size:11px;word-break:break-all;margin-bottom:8px">${webhookUrl}</code><span style="font-size:11px;color:var(--text-muted)">发布启动后，将 __STAGE_ID__ 替换为实际的stage id。外部系统调用此URL即可自动将该阶段从pending推进到in_progress。</span></div>`:''}
     <button class="btn btn-danger btn-sm" onclick="deleteDagNode(${n.id})" style="margin-top:8px">删除此节点</button>`;
 }
@@ -558,6 +586,12 @@ window.deleteDagNode = function(id) {
   renderDAG();
 };
 
+window.deleteDagEdge = function(id) {
+  dagState.edges = dagState.edges.filter(e=>e.id!==id);
+  dagState.selectedEdge = null;
+  renderDAG();
+};
+
 function autoLayout() {
   if (dagState.nodes.length === 0) return;
   // Topological sort to assign layers
@@ -581,7 +615,7 @@ function autoLayout() {
   const layerNodes = {};
   dagState.nodes.forEach(n => { const l=layer[n.id]||0; if(!layerNodes[l]) layerNodes[l]=[]; layerNodes[l].push(n); });
   // Position nodes
-  const layerX = 40, colW = 210, rowH = 50;
+  const layerX = 40, colW = 260, rowH = 50;
   for (let l=0; l<=maxLayer; l++) {
     const ns = layerNodes[l]||[];
     const startY = 40 + Math.max(0, (maxLayer*rowH - ns.length*rowH)/2);
@@ -591,15 +625,25 @@ function autoLayout() {
   toast('自动排版完成','info');
 }
 
+function svgPoint(e) {
+  const svg = document.getElementById('dag-svg');
+  const pt = svg.createSVGPoint();
+  pt.x = e.clientX; pt.y = e.clientY;
+  return pt.matrixTransform(svg.getScreenCTM().inverse());
+}
+
 function setupDAGMouse() {
   const svg = document.getElementById('dag-svg');
   const canvas = document.getElementById('dag-canvas');
   if (!svg || !canvas) return;
   let dragging = null, lastClickNode = null, offsetX = 0, offsetY = 0;
+  let panning = false, panStartX = 0, panStartY = 0, panScrollX = 0, panScrollY = 0;
 
   svg.addEventListener('mousedown', e => {
-    // Edge click
+    const nodeEl = e.target.closest('.dag-node');
     const edgeEl = e.target.closest('.dag-edge');
+
+    // Edge click
     if (edgeEl && !e.shiftKey) {
       const eid = parseInt(edgeEl.dataset.edgeId);
       dagState.selectedEdge = dagState.selectedEdge===eid ? null : eid;
@@ -607,7 +651,6 @@ function setupDAGMouse() {
       renderDAG();
       return;
     }
-    // Edge double-click to delete
     if (e.detail === 2 && edgeEl) {
       const eid = parseInt(edgeEl.dataset.edgeId);
       dagState.edges = dagState.edges.filter(ed=>ed.id!==eid);
@@ -616,10 +659,17 @@ function setupDAGMouse() {
       return;
     }
 
-    const nodeEl = e.target.closest('.dag-node');
-    if (!nodeEl) { dagState.selectedNode = null; dagState.selectedEdge = null; renderDAG(); return; }
-    const id = parseInt(nodeEl.dataset.nodeId);
+    if (!nodeEl) {
+      // Start panning on empty space
+      dagState.selectedNode = null; dagState.selectedEdge = null;
+      panning = true;
+      panStartX = e.clientX; panStartY = e.clientY;
+      panScrollX = canvas.scrollLeft; panScrollY = canvas.scrollTop;
+      renderDAG();
+      return;
+    }
 
+    const id = parseInt(nodeEl.dataset.nodeId);
     if (e.shiftKey && lastClickNode && lastClickNode !== id) {
       if (!dagState.edges.some(ed=>ed.from_node_id===lastClickNode&&ed.to_node_id===id)) {
         dagState.edges.push({ id: Date.now(), blueprint_id: 0, from_node_id: lastClickNode, to_node_id: id });
@@ -632,18 +682,30 @@ function setupDAGMouse() {
     dagState.selectedNode = id;
     dagState.selectedEdge = null;
     const node = dagState.nodes.find(n=>n.id===id);
-    if (node) { dragging = node; offsetX = e.clientX - node.pos_x; offsetY = e.clientY - node.pos_y; }
+    if (node) {
+      dragging = node;
+      const pt = svgPoint(e);
+      offsetX = pt.x - node.pos_x;
+      offsetY = pt.y - node.pos_y;
+    }
     renderDAG();
   });
 
   svg.addEventListener('mousemove', e => {
+    if (panning) {
+      canvas.scrollLeft = panScrollX - (e.clientX - panStartX);
+      canvas.scrollTop = panScrollY - (e.clientY - panStartY);
+      return;
+    }
     if (!dragging) return;
-    dragging.pos_x = e.clientX - offsetX;
-    dragging.pos_y = e.clientY - offsetY;
+    const pt = svgPoint(e);
+    dragging.pos_x = pt.x - offsetX;
+    dragging.pos_y = pt.y - offsetY;
     renderDAG();
   });
 
-  svg.addEventListener('mouseup', () => { dragging = null; });
+  svg.addEventListener('mouseup', () => { dragging = null; panning = false; });
+  svg.addEventListener('mouseleave', () => { dragging = null; panning = false; });
 }
 
 window.deleteBlueprint = async function(id) {
