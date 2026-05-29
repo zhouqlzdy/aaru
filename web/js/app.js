@@ -314,11 +314,12 @@ window.loadDUList = function() {
   renderDUList(dus);
 };
 
-window.loadDUDetail = function(code) {
+window.loadDUDetail = async function(code) {
   duSelectedCode = code;
   const title = document.getElementById('du-detail-title');
   const detail = document.getElementById('du-detail');
   if (title) title.textContent = code;
+  if (detail) showLoading(detail);
 
   // Highlight selected item
   document.querySelectorAll('.du-list-item').forEach(el=>{
@@ -330,14 +331,38 @@ window.loadDUDetail = function(code) {
     if (detail) detail.innerHTML = '<div class="empty-state"><p>未找到该部署单元</p></div>';
     return;
   }
-  if (detail) {
-    detail.innerHTML = `<div class="du-detail-card">
-      <div class="du-detail-field"><label>部署单元编码</label><span><code>${escapeHtml(d.code)}</code></span></div>
-      <div class="du-detail-field"><label>所属竖井 (Silo)</label><span>${escapeHtml(d.silo||'-')}</span></div>
-      <div class="du-detail-field"><label>所属系统 (System)</label><span>${escapeHtml(d.system||'-')}</span></div>
-      <div class="du-detail-field"><label>代码仓库</label><span style="word-break:break-all;font-size:12px">${escapeHtml(d.repo||'-')}</span></div>
-    </div>`;
+
+  // Build basic info section
+  let html = `<div class="du-detail-card">
+    <div class="du-detail-field"><label>部署单元编码</label><span><code>${escapeHtml(d.code)}</code></span></div>
+    <div class="du-detail-field"><label>所属竖井 (Silo)</label><span>${escapeHtml(d.silo||'-')}</span></div>
+    <div class="du-detail-field"><label>所属系统 (System)</label><span>${escapeHtml(d.system||'-')}</span></div>
+    <div class="du-detail-field"><label>代码仓库</label><span style="word-break:break-all;font-size:12px">${escapeHtml(d.repo||'-')}</span></div>
+  </div>`;
+
+  // Fetch version comparison from DMDB
+  try {
+    const data = await api('/deploy-units/'+encodeURIComponent(code)+'/compare');
+    const snapshots = data.snapshots||[];
+    if (snapshots.length > 0) {
+      html += `<div style="margin-top:20px"><h4 style="font-size:13px;font-weight:600;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border)">各环境版本对比</h4>
+        <table class="data-table du-compare-table">
+          <thead><tr><th>环境</th><th>制品版本 (ArtifactVersion)</th><th>制品ID</th><th>应用名称</th></tr></thead>
+          <tbody>${snapshots.map(s=>`<tr>
+            <td><strong>${escapeHtml(s.env_name||s.env)}</strong><br><span style="font-size:10px;color:var(--text-muted)">${escapeHtml(s.env)}</span></td>
+            <td><code style="background:#f4f4f5;padding:2px 6px;border-radius:4px;font-size:12px">${escapeHtml(s.artifact_version||'-')}</code></td>
+            <td>${escapeHtml(s.artifact_id||'-')}</td>
+            <td>${escapeHtml(s.app_name||'-')}</td>
+          </tr>`).join('')}</tbody>
+        </table></div>`;
+    } else {
+      html += `<div style="margin-top:20px"><div class="empty-state"><p>未在任何DMDB环境中找到此部署单元</p></div></div>`;
+    }
+  } catch(e) {
+    html += `<div style="margin-top:20px"><div class="empty-state"><p>获取版本对比失败: ${escapeHtml(e.message)}</p></div></div>`;
   }
+
+  if (detail) detail.innerHTML = html;
 };
 
 // ===== Approvals =====
