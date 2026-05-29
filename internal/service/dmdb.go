@@ -235,6 +235,9 @@ func (d *DMDBClient) CompareDUConfig(duCode string) ([]model.DUConfigSnapshot, e
 	// 后处理：InitDb/InitDbAuth/InitDbFinal 如果仅tag不同则简化展示
 	collapseInitTagOnly(snapshots)
 
+	// 展开剩余的对象数组JSON字段为独立子行
+	expandObjectArrayFields(snapshots, 10)
+
 	return snapshots, nil
 }
 
@@ -387,6 +390,131 @@ func extractTagAndCompare(url1, url2 string) (string, bool) {
 		return "", false
 	}
 	return tag2, true
+}
+
+// expandObjectArrayFields 将对象数组JSON字段展开为独立子行。
+// 短数组（≤maxItems）展开为 FieldName[index].subKey 格式，
+// 超过阈值的数组保持原JSON不变。
+// 必须在 collapseInitTagOnly 之后调用——其中被折叠的字段不会重复展开。
+func expandObjectArrayFields(snapshots []model.DUConfigSnapshot, maxItems int) {
+	if len(snapshots) == 0 {
+		return
+	}
+
+	// 收集所有snapshot中值为JSON对象数组的字段名
+	candidateKeys := make(map[string]bool)
+	for _, s := range snapshots {
+		for k, v := range s.Fields {
+			if candidateKeys[k] {
+				continue
+			}
+			if isObjectArrayJSON(v) {
+				candidateKeys[k] = true
+			}
+		}
+	}
+
+	for key := range candidateKeys {
+		// 找出各个snapshot中该字段的最大数组长度
+		maxLen := 0
+		for _, s := range snapshots {
+			raw, ok := s.Fields[key]
+			if !ok || raw == "" || raw == "null" {
+				continue
+			}
+			var arr []map[string]interface{}
+			if err := json.Unmarshal([]byte(raw), &arr); err != nil {
+				continue
+			}
+			if len(arr) > maxLen {
+				maxLen = len(arr)
+			}
+		}
+
+		// 超过阈值或空数组，保持原始JSON不变
+		if maxLen > maxItems || maxLen == 0 {
+			continue
+		}
+
+		// 收集所有snapshot中该对象数组的所有子键名，确保各环境展开后列一致
+		allSubKeys := make(map[string]bool)
+		for _, s := range snapshots {
+			raw, ok := s.Fields[key]
+			if !ok || raw == "" || raw == "null" {
+				continue
+			}
+			var arr []map[string]interface{}
+			if err := json.Unmarshal([]byte(raw), &arr); err != nil {
+				continue
+			}
+			for _, item := range arr {
+				for k := range item {
+					allSubKeys[k] = true
+				}
+			}
+		}
+		sortedSubKeys := make([]string, 0, len(allSubKeys))
+		for k := range allSubKeys {
+			sortedSubKeys = append(sortedSubKeys, k)
+		}
+		sort.Strings(sortedSubKeys)
+
+		// 逐snapshot展开
+		for si, s := range snapshots {
+			raw, ok := s.Fields[key]
+			if !ok || raw == "" || raw == "null" {
+				// 该环境没有此字段——为所有子键设空值
+				for i := 0; i < maxLen; i++ {
+					for _, sk := range sortedSubKeys {
+						subKey := fmt.Sprintf("%s[%d].%s", key, i, sk)
+						snapshots[si].Fields[subKey] = ""
+					}
+				}
+				continue
+			}
+			var arr []map[string]interface{}
+			if err := json.Unmarshal([]byte(raw), &arr); err != nil {
+				continue
+			}
+			// 展开每个数组元素
+			for i, item := range arr {
+				for _, sk := range sortedSubKeys {
+					subKey := fmt.Sprintf("%s[%d].%s", key, i, sk)
+					if v, ok := item[sk]; ok {
+						snapshots[si].Fields[subKey] = fmt.Sprintf("%v", v)
+					} else {
+						snapshots[si].Fields[subKey] = ""
+					}
+				}
+			}
+			// 如果该环境项数少于maxLen，剩余位置填充空
+			for i := len(arr); i < maxLen; i++ {
+				for _, sk := range sortedSubKeys {
+					subKey := fmt.Sprintf("%s[%d].%s", key, i, sk)
+					snapshots[si].Fields[subKey] = ""
+				}
+			}
+		}
+
+		// 删除原始JSON字段
+		for si := range snapshots {
+			delete(snapshots[si].Fields, key)
+		}
+	}
+}
+
+// isObjectArrayJSON 快速判断字符串是否为JSON对象数组
+// 匹配 [{"a":1}] 这种格式，排除 ["a","b"] 字符串数组和 {"a":1} 对象
+func isObjectArrayJSON(s string) bool {
+	if len(s) < 3 || s[0] != '[' {
+		return false
+	}
+	// 跳过空白字符，检查第一个元素是否为 {
+	i := 1
+	for i < len(s) && s[i] == ' ' {
+		i++
+	}
+	return i < len(s) && s[i] == '{'
 }
 
 func (d *DMDBClient) getFromDevops(path string, params map[string]string, result interface{}) error {
