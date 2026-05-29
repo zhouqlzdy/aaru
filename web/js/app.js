@@ -354,12 +354,11 @@ window.loadDUDetail = async function(code) {
         <button class="btn btn-sm btn-primary" onclick="showDUCompareDetail()">详细比对</button>
       </div>
         <table class="data-table du-compare-table">
-          <thead><tr><th>环境</th><th>制品版本 (ArtifactVersion)</th><th>制品ID</th><th>应用名称</th></tr></thead>
+          <thead><tr><th>环境</th><th>制品版本</th><th>节点数</th></tr></thead>
           <tbody>${duSnapshots.map(s=>`<tr>
             <td><strong>${escapeHtml(s.env_name||s.env)}</strong><br><span style="font-size:10px;color:var(--text-muted)">${escapeHtml(s.env)}</span></td>
             <td><code style="background:#f4f4f5;padding:2px 6px;border-radius:4px;font-size:12px">${escapeHtml(f(s)('ArtifactVersion'))}</code></td>
-            <td>${escapeHtml(f(s)('ArtifactId'))}</td>
-            <td>${escapeHtml(f(s)('AppName'))}</td>
+            <td>${escapeHtml(f(s)('NodeCount'))}</td>
           </tr>`).join('')}</tbody>
         </table></div>`;
     } else {
