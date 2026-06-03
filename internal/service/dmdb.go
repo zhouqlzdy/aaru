@@ -15,15 +15,21 @@ import (
 type DMDBClient struct {
 	baseURL   string
 	devopsURL string
+	token     string
 	client    *resty.Client
 }
 
-func NewDMDBClient(baseURL, devopsURL string) *DMDBClient {
-	return &DMDBClient{
+func NewDMDBClient(baseURL, devopsURL, token string) *DMDBClient {
+	c := &DMDBClient{
 		baseURL:   baseURL,
 		devopsURL: devopsURL,
+		token:     token,
 		client:    resty.New(),
 	}
+	if token != "" {
+		c.client.SetHeader("token", token)
+	}
+	return c
 }
 
 func (d *DMDBClient) ping() error {
@@ -247,7 +253,7 @@ func (d *DMDBClient) CompareDUConfig(duCode string) ([]model.DUConfigSnapshot, e
 // 如果各环境间仅有代码仓库URL中的tag版本不同（且tag与ArtifactVersion一致），
 // 则替换为简要提示而非完整JSON。
 func collapseInitTagOnly(snapshots []model.DUConfigSnapshot) {
-	initKeys := []string{"InitDb", "InitDbAuth", "InitDbFinal"}
+	initKeys := []string{"initDb", "initDbAuth", "initDbFinal"}
 	for _, key := range initKeys {
 		if !tryCollapseInitKey(snapshots, key) {
 			continue

@@ -28,7 +28,7 @@ func main() {
 	}
 
 	authService := service.NewAuthService(config.JwtSecret)
-	dmdbClient := service.NewDMDBClient(config.DMDB.ServerAddress, config.DevOps.ServerAddress)
+	dmdbClient := service.NewDMDBClient(config.DMDB.ServerAddress, config.DevOps.ServerAddress, config.DMDB.Token)
 	permService := service.NewPermissionService(dbStore)
 	bpService := service.NewBlueprintService(dbStore)
 	releaseService := service.NewReleaseService(dbStore, dmdbClient, permService, bpService)

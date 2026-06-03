@@ -114,12 +114,12 @@ func (s *DBStore) ListReleases(page, pageSize int) ([]model.Release, int64, erro
 	var total int64
 	s.db.Model(&model.Release{}).Count(&total)
 	offset := (page - 1) * pageSize
-	err := s.db.Preload("Stages").Preload("CreatedBy").Order("created_at DESC").Offset(offset).Limit(pageSize).Find(&list).Error
+	err := s.db.Preload("Stages.ApprovedBy").Preload("CreatedBy").Preload("Blueprint").Order("created_at DESC").Offset(offset).Limit(pageSize).Find(&list).Error
 	return list, total, err
 }
 func (s *DBStore) GetReleaseWithStages(id uint) (*model.Release, error) {
 	var r model.Release
-	err := s.db.Preload("Stages").Preload("CreatedBy").First(&r, id).Error
+	err := s.db.Preload("Stages.ApprovedBy").Preload("CreatedBy").Preload("Blueprint").First(&r, id).Error
 	if err != nil {
 		return nil, err
 	}

@@ -21,6 +21,7 @@ type Config struct {
 
 type DMDBConfig struct {
 	ServerAddress string `yaml:"server_address"`
+	Token         string `yaml:"token"`
 }
 
 type DevOpsConfig struct {

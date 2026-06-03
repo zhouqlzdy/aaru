@@ -77,6 +77,8 @@ async function loadPage(page, param) {
 }
 
 // ===== Releases =====
+let releaseStagesMap = {}; // {releaseId: stages[]}
+
 async function renderReleaseList(body, actions) {
   actions.innerHTML = '<button class="btn btn-primary" onclick="loadPage(\'create-release\')">+ 新建发布</button>';
   showLoading(body);
@@ -89,16 +91,23 @@ async function renderReleaseList(body, actions) {
     }
     const page = data.page || 1;
     const total = data.total || 0;
-    body.innerHTML = `<div class="card"><table class="data-table"><thead><tr><th>标题</th><th>部署单元</th><th>版本</th><th>环境</th><th>状态</th><th>创建者</th><th>时间</th><th>操作</th></tr></thead><tbody>${releases.map(r=>`<tr>
-      <td><a href="#" onclick="loadPage('release-detail',${r.id});return false" style="color:var(--accent);font-weight:500">${escapeHtml(r.title)}</a></td>
+    // 缓存每条发布的stages供蓝图模态框使用
+    releaseStagesMap = {};
+    releases.forEach(r => { releaseStagesMap[r.id] = r.stages || []; });
+    body.innerHTML = `<div class="card"><table class="data-table"><thead><tr><th>标题</th><th>部署单元</th><th>版本</th><th>蓝图</th><th>状态</th><th>创建者</th><th>时间</th><th>操作</th></tr></thead><tbody>${releases.map(r=>{
+      const bpName = r.blueprint?.name||'';
+      const bpId = r.blueprint_id||0;
+      const bpCell = bpName ? `<a href="#" class="text-link" onclick="showBlueprintModal(${bpId},${r.id});return false" title="查看蓝图详情">${escapeHtml(bpName)}</a>` : '-';
+      return `<tr>
+      <td><a href="#" class="text-link" onclick="loadPage('release-detail',${r.id});return false">${escapeHtml(r.title)}</a></td>
       <td>${escapeHtml(r.deploy_unit_code||'')}</td>
       <td><code style="background:#f4f4f5;padding:2px 6px;border-radius:4px;font-size:12px">${escapeHtml(r.version||'')}</code></td>
-      <td>${escapeHtml(r.stages?.map(s=>s.env_name||s.env_code).join(', ')||'')}</td>
+      <td>${bpCell}</td>
       <td>${statusHTML(r.status)}</td>
       <td>${escapeHtml(r.created_by?.username||'')}</td>
       <td>${fmtTime(r.created_at)}</td>
       <td class="action-group">${r.status==='draft'?'<button class="btn btn-sm btn-primary" onclick="startRelease('+r.id+')">开始发布</button>':''}${r.status==='in_progress'||r.status==='completed'?'<button class="btn btn-sm btn-secondary" onclick="loadPage(\'release-detail\','+r.id+')">查看</button>':''}${r.status==='completed'||r.status==='in_progress'?'<button class="btn btn-sm btn-danger" onclick="rollbackRelease('+r.id+')">回滚</button>':''}</td>
-    </tr>`).join('')}</tbody></table></div>`;
+    </tr>`}).join('')}</tbody></table></div>`;
   } catch(e) { body.innerHTML = '<div class="empty-state"><p>加载失败: '+escapeHtml(e.message)+'</p></div>'; }
 }
 
@@ -119,23 +128,174 @@ async function rollbackRelease(id) {
   } catch(e) { toast(e.message,'error'); }
 }
 
+// 渲染发布流水线DAG（只读，基于蓝图拓扑+阶段状态着色）
+async function renderReleasePipeline(blueprintId, stages) {
+  const container = document.getElementById('release-pipeline-container');
+  if (!container) return;
+
+  try {
+    const bp = await api('/blueprints/' + blueprintId);
+    const nodes = bp.nodes || [];
+    const edges = bp.edges || [];
+
+    if (nodes.length === 0) {
+      container.innerHTML = '<div style="text-align:center;color:var(--text-muted)">蓝图无环境节点</div>';
+      return;
+    }
+
+    // 构建 stageByNodeId 映射
+    const stageByNode = new Map();
+    const stageByEnv = new Map();
+    stages.forEach(s => {
+      if (s.node_id) stageByNode.set(s.node_id, s);
+      stageByEnv.set(s.env_code, s);
+    });
+
+    // 计算节点宽高
+    const nodeH = 36, nodePadX = 24;
+    nodes.forEach(n => {
+      const label = n.env_name || n.env_code || '';
+      n._w = Math.max(90, Math.min(220, label.length * 10 + nodePadX * 2));
+    });
+
+    // 自动布局：按拓扑分层
+    const nodeById = new Map(nodes.map(n => [n.id, n]));
+    const childrenOf = new Map();
+    const inDeg = new Map();
+    nodes.forEach(n => { childrenOf.set(n.id, []); inDeg.set(n.id, 0); });
+    edges.forEach(e => {
+      childrenOf.get(e.from_node_id)?.push(e.to_node_id);
+      inDeg.set(e.to_node_id, (inDeg.get(e.to_node_id) || 0) + 1);
+    });
+
+    // Kahn分层
+    const layers = [];
+    let queue = nodes.filter(n => (inDeg.get(n.id) || 0) === 0).map(n => n.id);
+    const assigned = new Set();
+    while (queue.length) {
+      layers.push(queue);
+      queue.forEach(id => assigned.add(id));
+      const next = [];
+      queue.forEach(id => {
+        (childrenOf.get(id) || []).forEach(cid => {
+          inDeg.set(cid, inDeg.get(cid) - 1);
+          if (inDeg.get(cid) === 0 && !assigned.has(cid)) next.push(cid);
+        });
+      });
+      queue = next;
+    }
+    // 如果有未分配的节点（环），追加到最后
+    nodes.forEach(n => { if (!assigned.has(n.id)) layers.push([n.id]); });
+
+    // 计算位置
+    const layerGapX = 260, nodeGapY = 24;
+    layers.forEach((layer, li) => {
+      const layerW = layer.reduce((sum, nid) => sum + (nodeById.get(nid)?._w || 100) + (sum > 0 ? nodeGapY : 0), 0);
+      let curY = 0;
+      layer.forEach((nid, ni) => {
+        const n = nodeById.get(nid);
+        if (!n) return;
+        n._px = li * layerGapX;
+        n._py = curY;
+        curY += (n._w || 100) + nodeGapY; // 这里用_w做间距不太好，改为固定
+      });
+      // 重新用固定间距
+      curY = 0;
+      layer.forEach((nid, ni) => {
+        const n = nodeById.get(nid);
+        if (!n) return;
+        n._py = curY;
+        curY += nodeH + nodeGapY;
+      });
+      // 居中对齐
+      const totalH = layer.length * nodeH + (layer.length - 1) * nodeGapY;
+      layer.forEach(nid => {
+        const n = nodeById.get(nid);
+        if (n) n._py = n._py - totalH / 2;
+      });
+    });
+
+    // 计算SVG尺寸
+    const maxLayerLen = Math.max(...layers.map(l => l.length));
+    const svgW = layers.length * layerGapX + 120;
+    const svgH = maxLayerLen * (nodeH + nodeGapY) + 80;
+    const offsetX = 40, offsetY = svgH / 2;
+
+    // 确定每个节点的状态
+    function getNodeStatus(n) {
+      const s = stageByNode.get(n.id) || stageByEnv.get(n.env_code);
+      return s?.status || 'pending';
+    }
+
+    // 判断边是否"已完成"（from节点completed且to节点至少in_progress）
+    function getEdgeClass(e) {
+      const fromSt = getNodeStatus(nodeById.get(e.from_node_id));
+      const toSt = getNodeStatus(nodeById.get(e.to_node_id));
+      if (fromSt === 'completed' && (toSt === 'completed' || toSt === 'in_progress' || toSt === 'pushing' || toSt === 'approved')) return 'completed';
+      if (fromSt === 'completed' || fromSt === 'in_progress' || fromSt === 'approved') return 'active';
+      return '';
+    }
+
+    // 渲染边
+    const edgesHTML = edges.map(e => {
+      const from = nodeById.get(e.from_node_id), to = nodeById.get(e.to_node_id);
+      if (!from || !to) return '';
+      const sx = offsetX + from._px + from._w;
+      const sy = offsetY + from._py + nodeH / 2;
+      const ex = offsetX + to._px;
+      const ey = offsetY + to._py + nodeH / 2;
+      const hOff = Math.max(40, Math.abs(ex - sx) * 0.4);
+      const cls = getEdgeClass(e);
+      return `<path class="pipeline-dag-edge ${cls}" d="M${sx},${sy} C${sx+hOff},${sy} ${ex-hOff},${ey} ${ex},${ey}"/>`;
+    }).join('');
+
+    // 渲染节点
+    const statusLabel = { pending:'待处理', in_progress:'进行中', approved:'已通过', pushing:'推送中', completed:'已完成', rejected:'已驳回' };
+    const nodesHTML = nodes.map(n => {
+      const st = getNodeStatus(n);
+      const active = st === 'in_progress' || st === 'pushing' || st === 'approved';
+      const label = n.env_name || n.env_code;
+      const x = offsetX + n._px, y = offsetY + n._py;
+      return `<g class="pipeline-dag-node status-${st}${active?' active':''}" transform="translate(${x},${y})">
+        <rect width="${n._w}" height="${nodeH}"/>
+        <text x="${n._w/2}" y="${nodeH/2 + 1}">${escapeHtml(label)}</text>
+      </g>`;
+    }).join('');
+
+    // 图例
+    const legendItems = [
+      {fill:'#f4f4f5', stroke:'#d1d5db', label:'待处理'}, {fill:'#dbeafe', stroke:'#3b82f6', label:'进行中'},
+      {fill:'#ede9fe', stroke:'#8b5cf6', label:'已通过'}, {fill:'#fef3c7', stroke:'#f59e0b', label:'推送中'},
+      {fill:'#d1fae5', stroke:'#10b981', label:'已完成'}, {fill:'#fee2e2', stroke:'#ef4444', label:'已驳回'}
+    ];
+    const legendHTML = `<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:12px">${legendItems.map(item =>
+      `<div style="display:flex;align-items:center;gap:4px;font-size:11px"><svg width="14" height="14"><rect width="14" height="14" rx="3" fill="${item.fill}" stroke="${item.stroke}" stroke-width="1.5"/></svg>${item.label}</div>`
+    ).join('')}</div>`;
+
+    container.innerHTML = `<div class="pipeline-dag-container"><svg width="${svgW}" height="${svgH}" viewBox="0 0 ${svgW} ${svgH}">
+      <defs><marker id="pipeline-arrow" markerWidth="6" markerHeight="5" refX="6" refY="2.5" orient="auto"><polygon points="0 0, 6 2.5, 0 5" fill="#9ca3af"/></marker>
+      <marker id="pipeline-arrow-done" markerWidth="6" markerHeight="5" refX="6" refY="2.5" orient="auto"><polygon points="0 0, 6 2.5, 0 5" fill="#10b981"/></marker></defs>
+      ${edgesHTML}
+      ${nodesHTML}
+    </svg></div>${legendHTML}`;
+
+    // 给边添加箭头（通过CSS marker-end在SVG内联中不生效，用JS补）
+    container.querySelectorAll('.pipeline-dag-edge').forEach(el => {
+      if (el.classList.contains('completed')) el.style.markerEnd = 'url(#pipeline-arrow-done)';
+      else el.style.markerEnd = 'url(#pipeline-arrow)';
+    });
+
+  } catch(e) {
+    container.innerHTML = `<div style="color:#ef4444">流水线加载失败: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
 async function renderReleaseDetail(body, id) {
   showLoading(body);
   try {
     const r = await api('/releases/'+id);
     if (!r) return;
     const stages = r.stages||[];
-    const pipelineHTML = stages.length ? `<div class="card" style="margin-bottom:24px"><div class="card-header"><div class="card-title">发布流水线</div></div><div class="card-body"><div class="pipeline">${stages.map((s,i)=>{
-      const done = s.status==='completed';
-      const active = s.status==='in_progress'||s.status==='pushing'||s.status==='approved';
-      const icon = done?'✓':s.status==='rejected'?'✕':(i+1);
-      return `<div class="pipeline-stage ${s.status}">
-        <div class="pipeline-node">${icon}</div>
-        <div class="pipeline-label">${escapeHtml(s.env_name||s.env_code)}</div>
-        <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${statusHTML(s.status)}</div>
-      </div>
-      ${i<stages.length-1?`<div class="pipeline-line ${done||stages[i].status==='approved'?'approved':''}"></div>`:''}`;
-    }).join('')}</div></div></div>` : '';
 
     // Changes summary
     const changes = r.changes||{};
@@ -165,23 +325,96 @@ async function renderReleaseDetail(body, id) {
       <div>${r.status==='draft'?'<button class="btn btn-primary" onclick="startRelease('+r.id+')">开始发布</button>':''}${r.status==='in_progress'||r.status==='completed'?'<button class="btn btn-danger" onclick="rollbackRelease('+r.id+')">回滚</button>':''}</div>
     </div>
     ${changesHTML}
-    ${pipelineHTML}
-    <div class="card"><div class="card-header"><div class="card-title">阶段详情</div></div><div class="card-body">${renderStageTable(stages)}</div></div>`;
+    <div class="card" style="margin-bottom:24px"><div class="card-header"><div class="card-title">发布流水线</div></div><div class="card-body" id="release-pipeline-container"><div style="text-align:center;color:var(--text-muted)">加载流水线…</div></div></div>
+    <div class="card"><div class="card-header"><div class="card-title">阶段详情</div></div><div class="card-body" id="stage-table-container"><div style="text-align:center;color:var(--text-muted)">加载中…</div></div></div>`;
+
+    // 异步加载蓝图并渲染DAG流水线
+    if (r.blueprint_id) {
+      renderReleasePipeline(r.blueprint_id, stages);
+    }
+
+    // 异步加载DU当前配置快照，用于比对实际差异
+    let snapshots = [];
+    if (r.deploy_unit_code) {
+      try {
+        const data = await api('/deploy-units/'+encodeURIComponent(r.deploy_unit_code)+'/compare');
+        snapshots = data.snapshots || [];
+      } catch(e) { /* 忽略，降级为不比对 */ }
+    }
+    const stageContainer = document.getElementById('stage-table-container');
+    if (stageContainer) {
+      stageContainer.innerHTML = renderStageTable(stages, changes, snapshots);
+    }
   } catch(e) { body.innerHTML = '<div class="empty-state"><p>加载失败: '+escapeHtml(e.message)+'</p></div>'; }
 }
 
-function renderStageTable(stages) {
-  return `<table class="data-table"><thead><tr><th>环境</th><th>顺序</th><th>状态</th><th>审批人</th><th>备注</th><th>操作</th></tr></thead><tbody>${stages.map(s=>{
-    let actions = '';
-    if (s.status==='in_progress') actions = '<button class="btn btn-sm btn-success" onclick="approveStage('+s.id+')">通过</button><button class="btn btn-sm btn-danger" onclick="rejectStage('+s.id+')">驳回</button>';
-    else if (s.status==='pending') actions = '<button class="btn btn-sm btn-primary" onclick="promoteStage('+s.id+')">部署到此环境</button>';
-    else if (s.status==='pushing') actions = '<button class="btn btn-sm btn-warning" onclick="retryPush('+s.id+')">重试推送</button>';
+function renderStageTable(stages, changes, snapshots) {
+  // 构建 envCode → snapshot fields 映射
+  const snapByEnv = new Map();
+  (snapshots || []).forEach(s => snapByEnv.set(s.env, s.fields || {}));
+
+  // 解析某个环境的具体变更值
+  function resolveForEnv(envCode) {
+    const result = {};
+    for (const [k, v] of Object.entries(changes || {})) {
+      if (v && typeof v === 'object' && !Array.isArray(v)) {
+        if (v[envCode] !== undefined) result[k] = v[envCode];
+        else if (v._default !== undefined) result[k] = v._default;
+      } else {
+        result[k] = v;
+      }
+    }
+    return result;
+  }
+
+  return `<table class="data-table"><thead><tr><th>环境</th><th>顺序</th><th>状态</th><th>审批人</th><th>备注</th><th>变更内容</th></tr></thead><tbody>${stages.map(s=>{
+    const envChanges = resolveForEnv(s.env_code);
+    const currentFields = snapByEnv.get(s.env_code) || {};
+
+    // 计算合并后的目标值（含 initDb tag 自动同步）
+    const merged = {...currentFields};
+    Object.entries(envChanges).forEach(([k,v]) => { merged[k] = v; });
+
+    // 如果 ArtifactVersion 有变更，自动同步 initDb 类字段的 URL tag
+    const newAV = merged['ArtifactVersion'];
+    const autoUpdated = new Set();
+    if (newAV && String(newAV) !== String(currentFields['ArtifactVersion'] || '')) {
+      CR_INIT_DB_FIELDS.forEach(field => {
+        if (envChanges[field] !== undefined) return; // 手动修改了该字段，不覆盖
+        const current = currentFields[field];
+        const updated = autoUpdateInitDbUrls(current, String(newAV));
+        if (updated !== null) {
+          merged[field] = updated;
+          autoUpdated.add(field);
+        }
+      });
+    }
+
+    // 只保留与当前值不同的字段
+    const diffItems = [];
+    for (const [k, targetVal] of Object.entries(merged)) {
+      const currentVal = currentFields[k] ?? '';
+      const targetStr = typeof targetVal === 'object' ? JSON.stringify(targetVal) : String(targetVal ?? '');
+      if (targetStr === String(currentVal)) continue;
+      // 跳过非变更字段（只展示手动变更 + 自动同步的字段）
+      if (!(k in envChanges) && !autoUpdated.has(k)) continue;
+      const isComplex = Array.isArray(targetVal) || (typeof targetVal === 'object' && targetVal !== null);
+      const disp = isComplex ? crFormatJson(targetStr) : targetStr;
+      const display = isComplex
+        ? `<span style="font-family:monospace;font-size:11px;white-space:pre-wrap;word-break:break-all">${escapeHtml(disp.length > 120 ? disp.substring(0,120)+'…' : disp)}</span>`
+        : `<span style="font-size:12px">${escapeHtml(disp)}</span>`;
+      const autoTag = autoUpdated.has(k) ? ' <span style="font-size:10px;color:#f59e0b" title="随ArtifactVersion自动同步">🔗</span>' : '';
+      diffItems.push(`<div style="margin-bottom:4px"><span style="color:var(--text-muted);font-size:11px">${escapeHtml(k)}</span>${autoTag}: ${display}</div>`);
+    }
+    const changesCell = diffItems.length > 0
+      ? `<div style="max-height:200px;overflow:auto">${diffItems.join('')}</div>`
+      : '<span style="color:var(--text-muted)">无实际变更</span>';
     return `<tr>
       <td><strong>${escapeHtml(s.env_name||s.env_code)}</strong></td><td>${s.promotion_order+1}</td>
       <td>${statusHTML(s.status)}</td>
       <td>${escapeHtml(s.approved_by?.username||'-')}</td>
       <td>${escapeHtml(s.comment||'-')}</td>
-      <td class="action-group">${actions}</td>
+      <td style="min-width:260px">${changesCell}</td>
     </tr>`;
   }).join('')}</tbody></table>`;
 }
@@ -228,14 +461,14 @@ let crPerEnvVals = {};        // {fieldName: {envCode: val}}
 const CR_SCALAR_FIELDS = [
   'AppName','desc','du_type_code','deploy_type',
   'ArtifactGroupId','ArtifactId','ArtifactVersion',
-  'NodeCount','RunAsUser','RunAsGroup','JvmArgs','LogLevel','MetricPort',
+  'NodeCount','RunAsUser','RunAsGroup','JvmArgs','Loglevel','MetricPort',
   'MaxPollRecords','BatchSize','kafkaTxTimeoutMs','kafkaDeliveryTimeoutMs',
-  'ExtraConfig','UseFtp','RemoteDir','CommonServiceConfig','DUDatabases',
-  'dbStreamEnhancedAudit'
+  'ExtraConfig','UseFtp','RemoteDir','dbStreamEnhancedAudit'
 ];
 const CR_ARRAY_FIELDS = [
-  'InitDb','InitDbAuth','InitDbFinal','InitKafka','frameworkDatasource','ServiceDatasource'
+  'initDb','initDbAuth','initDbFinal','ImportData','initKafka','frameworkDatasource','serviceDatasource','Servers'
 ];
+const CR_INIT_DB_FIELDS = ['initDb', 'initDbAuth', 'initDbFinal', 'ImportData'];
 const CR_READONLY_FIELDS = new Set([
   'id','classCode','biz_serial','Env','System','SiloCode','SiloNo',
   'SystemName','belong_System'
@@ -368,7 +601,9 @@ window.crGoStep2 = async function() {
   } catch(e) { crBlueprintEnvs = new Set(); }
   try {
     const data = await api('/deploy-units/'+encodeURIComponent(crSelectedDU.code)+'/compare');
-    crSnapshots = data.snapshots||[];
+    const allSnapshots = data.snapshots||[];
+    // 只保留蓝图相关环境
+    crSnapshots = allSnapshots.filter(s => crBlueprintEnvs.has(s.env));
   } catch(e) { crSnapshots = []; }
   crRenderStep(body);
 };
@@ -425,19 +660,11 @@ function crStep2() {
     } else {
       const envCount = crSnapshots.length;
       const colW = 280;
-      const bpEnvCount = crSnapshots.filter(s=>crBlueprintEnvs.has(s.env)).length;
-      const otherEnvCount = envCount - bpEnvCount;
-      const summary = otherEnvCount > 0
-        ? `${envCount} 个环境（蓝图内 ${bpEnvCount} / 蓝图外 ${otherEnvCount}）/ ${diffKeys.length} 个差异项`
-        : `${envCount} 个环境 / ${diffKeys.length} 个差异项`;
-      tableHTML = `<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">${summary}</div>
+      tableHTML = `<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">${envCount} 个环境 / ${diffKeys.length} 个差异项</div>
         <div style="overflow:auto;max-height:60vh"><table class="data-table cr-status-table" style="table-layout:fixed;width:${180 + envCount * colW}px">
         <colgroup><col style="width:180px">${crSnapshots.map(()=>`<col style="width:${colW}px">`).join('')}</colgroup>
         <thead><tr><th style="position:sticky;left:0;background:#fafafa;z-index:1">配置项</th>${crSnapshots.map(s=>{
-          const inBP = crBlueprintEnvs.has(s.env);
-          const tag = inBP ? '' : ' <span style="font-size:10px;color:#9ca3af;font-weight:400">[蓝图外]</span>';
-          const thBg = inBP ? '' : 'background:#f9fafb;';
-          return `<th style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;${thBg}">${escapeHtml(s.env_name||s.env)}${tag}</th>`;
+          return `<th style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(s.env_name||s.env)}</th>`;
         }).join('')}</tr></thead>
         <tbody>${diffKeys.map(k=>{
           const isArrayField = CR_ARRAY_FIELDS.includes(k);
@@ -445,9 +672,7 @@ function crStep2() {
           const dispVals = rawVals.map(v=>isArrayField ? crArrSummary(v) : summarizeValue(v));
           const colors = crAssignValueColors(rawVals);
           return `<tr><td style="position:sticky;left:0;background:#fff;z-index:1"><strong class="diff-field-link" data-field="${escapeHtml(k)}" style="cursor:pointer;color:var(--accent)" title="点击查看详细差异">${escapeHtml(k)}</strong>${isArrayField?' <span style="font-size:10px;color:var(--text-muted)">[数组]</span>':''}</td>${dispVals.map((v,i)=>{
-            const inBP = crBlueprintEnvs.has(crSnapshots[i].env);
-            const tdBg = inBP ? `background:${colors[i]}` : `background:#f9fafb;opacity:0.7`;
-            return `<td style="font-size:12px;word-break:break-all;white-space:pre-wrap;${tdBg}">${v}</td>`;
+            return `<td style="font-size:12px;word-break:break-all;white-space:pre-wrap;background:${colors[i]}">${v}</td>`;
           }).join('')}</tr>`;
         }).join('')}</tbody></table></div>`;
     }
@@ -497,12 +722,13 @@ function crStep3() {
 function crRenderFieldRow(fieldName) {
   if (!crSnapshots.length) return '<p style="color:var(--text-muted)">无环境数据</p>';
   const envs = crSnapshots.map(s=>({code:s.env, name:s.env_name||s.env, val:(s.fields||{})[fieldName]}));
-  const vals = envs.map(e=>String(e.val??''));
-  const allSame = new Set(vals).size<=1;
-  const isArray = crSnapshots.some(s=>{ const v=(s.fields||{})[fieldName]; return v&&typeof v==='string'&&v.startsWith('['); });
+  const rawVals = envs.map(e=>e.val??'');
+  const colors = crAssignValueColors(rawVals);
+  const isArray = CR_ARRAY_FIELDS.includes(fieldName);
   const perEnv = crPerEnvMode.has(fieldName);
 
   const firstCol = `<th style="position:sticky;left:0;background:#fafafa;z-index:1;min-width:100px">配置项</th>`;
+  const envThs = envs.map(e=>`<th style="white-space:nowrap">${escapeHtml(e.name)}</th>`).join('');
 
   // 按环境模式：每个环境一列输入框
   if (perEnv) {
@@ -511,42 +737,63 @@ function crRenderFieldRow(fieldName) {
       envs.forEach(e => { crPerEnvVals[fieldName][e.code] = isArray ? (e.val||'') : String(e.val??''); });
     }
     const pv = crPerEnvVals[fieldName];
-    const envThs = envs.map(e=>`<th style="white-space:nowrap">${escapeHtml(e.name)}</th>`).join('');
-    const envTds = envs.map(e=>{
+    const envTds = envs.map((e,i)=>{
       const cur = pv[e.code]??'';
-      if (isArray) {
-        return `<td class="new-col" style="min-width:140px"><textarea rows="1" style="min-width:120px;font-size:11px" onchange="crSetPerEnv('${fieldName}','${e.code}',this.value)">${escapeHtml(cur)}</textarea></td>`;
-      }
-      return `<td class="new-col" style="min-width:140px"><input type="text" style="min-width:120px;font-size:11px" value="${escapeHtml(cur)}" onchange="crSetPerEnv('${fieldName}','${e.code}',this.value)"></td>`;
+      const inputHtml = isArray
+        ? `<textarea rows="3" style="width:100%;min-width:120px;font-size:11px;font-family:monospace" onchange="crSetPerEnv('${fieldName}','${e.code}',this.value)">${escapeHtml(crFormatJson(cur))}</textarea>`
+        : `<textarea rows="2" style="width:100%;min-width:120px;font-size:11px" onchange="crSetPerEnv('${fieldName}','${e.code}',this.value)">${escapeHtml(cur)}</textarea>`;
+      return `<td style="min-width:140px;vertical-align:top;background:${colors[i]}">${inputHtml}</td>`;
     }).join('');
-    const firstTd = `<td style="position:sticky;left:0;background:#fff;z-index:1"><strong>${escapeHtml(fieldName)}</strong> <button class="btn btn-xs btn-secondary" onclick="crTogglePerEnv('${fieldName}',false)" title="收回为统一值">↺</button></td>`;
+    const firstTd = `<td style="position:sticky;left:0;background:#fff;z-index:1"><strong class="diff-field-link" data-field="${escapeHtml(fieldName)}" style="cursor:pointer;color:var(--accent)" title="点击查看详细差异">${escapeHtml(fieldName)}</strong> <button class="btn btn-xs btn-secondary" onclick="crTogglePerEnv('${fieldName}',false)" title="收回为统一值">↺</button></td>`;
     return `<div style="overflow-x:auto"><table class="cr-field-table">
       <thead><tr>${firstCol}${envThs}</tr></thead>
       <tbody><tr>${firstTd}${envTds}</tr></tbody></table></div>`;
   }
 
   // 统一模式
-  const envThs = envs.map(e=>`<th style="white-space:nowrap">${escapeHtml(e.name)}</th>`).join('');
   const newColTh = `<th style="background:#f0fdf4;min-width:220px">新值 <button class="btn btn-xs btn-secondary" onclick="crTogglePerEnv('${fieldName}',true)" title="按环境指定">⇄</button></th>`;
 
+  // 现状值单元格（与查看现状页一致的彩色展示）
+  const envTds = envs.map((e,i)=>{
+    const disp = isArray ? crArrSummary(e.val) : summarizeValue(e.val);
+    return `<td style="font-size:12px;word-break:break-all;white-space:pre-wrap;background:${colors[i]}">${disp}</td>`;
+  }).join('');
+  const firstTd = `<td style="position:sticky;left:0;background:#fff;z-index:1"><strong class="diff-field-link" data-field="${escapeHtml(fieldName)}" style="cursor:pointer;color:var(--accent)" title="点击查看详细差异">${escapeHtml(fieldName)}</strong></td>`;
+
+  // 新值输入框：统一使用多行textarea
+  const currentVal = crChanges[fieldName]||'';
+  let inputHtml;
   if (isArray) {
-    const envTds = envs.map(e=>`<td class="env-col ${allSame?'':'diff'}" style="min-width:100px"><div style="max-height:80px;overflow:auto;font-size:11px;font-family:monospace;white-space:pre-wrap">${escapeHtml(crFormatJson(e.val))}</div></td>`).join('');
-    const firstTd = `<td style="position:sticky;left:0;background:#fff;z-index:1"><strong>${escapeHtml(fieldName)}</strong></td>`;
-    const currentVal = crChanges[fieldName]||'';
     const displayVal = currentVal ? crFormatJson(currentVal) : '';
-    return `<div style="overflow-x:auto"><table class="cr-field-table">
-      <thead><tr>${firstCol}${envThs}${newColTh}</tr></thead>
-      <tbody><tr>${firstTd}${envTds}
-      <td class="new-col"><textarea rows="4" style="min-width:200px;font-family:monospace;font-size:11px" onchange="crSetChange('${fieldName}',this.value)" placeholder='JSON数组，如 [{"id":"1","type":"mysql"}]'>${escapeHtml(displayVal)}</textarea>
-      <div style="margin-top:4px"><button class="btn btn-xs btn-secondary" onclick="crFormatJsonInput('${fieldName}')">格式化</button> <span style="font-size:10px;color:var(--text-muted)">留空=不修改</span></div></td></tr></tbody></table></div>`;
+    inputHtml = `<td class="new-col" style="vertical-align:top"><textarea rows="4" style="width:100%;min-width:200px;font-family:monospace;font-size:11px" onchange="crSetChange('${fieldName}',this.value)" placeholder='JSON数组，如 [{"id":"1","type":"mysql"}]'>${escapeHtml(displayVal)}</textarea>
+      <div style="margin-top:4px"><button class="btn btn-xs btn-secondary" onclick="crFormatJsonInput('${fieldName}')">格式化</button> <span style="font-size:10px;color:var(--text-muted)">留空=不修改</span></div></td>`;
+  } else {
+    inputHtml = `<td class="new-col" style="vertical-align:top"><textarea rows="2" style="width:100%;min-width:200px;font-size:11px" onchange="crSetChange('${fieldName}',this.value)" placeholder="不填=不修改">${escapeHtml(currentVal)}</textarea>
+      <div style="margin-top:4px;font-size:10px;color:var(--text-muted)">留空=不修改</div></td>`;
   }
 
-  const envTds = envs.map(e=>`<td class="env-col ${allSame?'':'diff'}" style="min-width:100px">${escapeHtml(String(e.val??'-'))}</td>`).join('');
-  const firstTd = `<td style="position:sticky;left:0;background:#fff;z-index:1"><strong>${escapeHtml(fieldName)}</strong></td>`;
   return `<div style="overflow-x:auto"><table class="cr-field-table">
-    <thead><tr>${firstCol}${envThs}${newColTh}</tr></thead>
-    <tbody><tr>${firstTd}${envTds}
-    <td class="new-col"><input type="text" style="min-width:200px" value="${escapeHtml(crChanges[fieldName]||'')}" onchange="crSetChange('${fieldName}',this.value)" placeholder="不填=不修改"></td></tr></tbody></table></div>`;
+    <thead><tr>${firstCol}${newColTh}${envThs}</tr></thead>
+    <tbody><tr>${firstTd}${inputHtml}${envTds}</tr></tbody></table></div>`;
+}
+
+// 预览页专用：复杂值按实际格式展示，简单值直接显示
+function crFormatPreviewValue(v) {
+  if (v === null || v === undefined || v === '') return '<span style="color:var(--text-muted)">-</span>';
+  const s = String(v);
+  // JSON 数组或对象 → 格式化后以等宽块展示
+  if ((s.startsWith('[') || s.startsWith('{')) && s.length > 1) {
+    try {
+      const parsed = JSON.parse(s);
+      const formatted = JSON.stringify(parsed, null, 2);
+      return `<pre style="margin:0;font-size:11px;font-family:monospace;white-space:pre-wrap;word-break:break-all;max-height:300px;overflow:auto;background:#f9fafb;padding:4px 6px;border-radius:4px">${escapeHtml(formatted)}</pre>`;
+    } catch(e) {}
+  }
+  // 多行字符串
+  if (s.includes('\n')) {
+    return `<pre style="margin:0;font-size:11px;font-family:monospace;white-space:pre-wrap;word-break:break-all">${escapeHtml(s)}</pre>`;
+  }
+  return escapeHtml(s);
 }
 
 function crArrSummary(v) {
@@ -709,35 +956,110 @@ function crResolveForEnv(fieldName, envCode) {
   return crChanges[fieldName];
 }
 
+// 替换 git blob URL 中的 tag 部分
+// URL 格式: https://git.example.com/repo/blob/TAG/path/to/file
+function replaceUrlTag(url, newTag) {
+  const idx = url.indexOf('/blob/');
+  if (idx < 0) return url;
+  const after = url.substring(idx + 6); // skip '/blob/'
+  const slashIdx = after.indexOf('/');
+  if (slashIdx < 0) return url;
+  return url.substring(0, idx + 6) + newTag + after.substring(slashIdx);
+}
+
+// 对 initDb 类数组字段，将所有 source URL 中的 tag 替换为新版本
+// 返回更新后的 JSON 字符串，如果无变化返回 null
+function autoUpdateInitDbUrls(currentVal, newVersion) {
+  if (!currentVal || !newVersion) return null;
+  let arr;
+  try { arr = JSON.parse(typeof currentVal === 'string' ? currentVal : JSON.stringify(currentVal)); } catch(e) { return null; }
+  if (!Array.isArray(arr) || arr.length === 0) return null;
+  let changed = false;
+  const updated = arr.map(item => {
+    if (!item || typeof item !== 'object') return item;
+    const source = item.source;
+    if (!source || typeof source !== 'string') return item;
+    const idx = source.indexOf('/blob/');
+    if (idx < 0) return item;
+    const after = source.substring(idx + 6);
+    const slashIdx = after.indexOf('/');
+    if (slashIdx < 0) return item;
+    const oldTag = after.substring(0, slashIdx);
+    if (oldTag === newVersion) return item;
+    changed = true;
+    return {...item, source: replaceUrlTag(source, newVersion)};
+  });
+  return changed ? JSON.stringify(updated) : null;
+}
+
+// 计算某个环境的最终变更值（含 initDb tag 自动同步）
+// 返回 { merged: 完整字段映射, autoUpdated: 自动更新的字段集合 }
+function crResolveEnvChanges(envCode, snapshotFields) {
+  const merged = {...(snapshotFields || {})};
+  const autoUpdated = new Set();
+
+  // 先应用手动变更
+  const changeKeys = new Set();
+  Object.keys(crChanges).forEach(k=>{ if(crChanges[k]!==''&&crChanges[k]!==undefined&&!crPerEnvMode.has(k)) changeKeys.add(k); });
+  crPerEnvMode.forEach(k=>changeKeys.add(k));
+  changeKeys.forEach(k => { merged[k] = crResolveForEnv(k, envCode); });
+
+  // 如果 ArtifactVersion 有变更，自动同步 initDb 类字段的 URL tag
+  const newAV = merged['ArtifactVersion'];
+  const origAV = (snapshotFields||{})['ArtifactVersion'];
+  if (newAV && String(newAV) !== String(origAV || '')) {
+    CR_INIT_DB_FIELDS.forEach(field => {
+      if (changeKeys.has(field)) return;
+      const current = (snapshotFields||{})[field];
+      const updated = autoUpdateInitDbUrls(current, String(newAV));
+      if (updated !== null) {
+        merged[field] = updated;
+        autoUpdated.add(field);
+      }
+    });
+  }
+  return { merged, autoUpdated };
+}
+
 function crStep4Preview() {
   // 收集所有变更字段（统一 + 按环境）
   const changeKeys = new Set();
   Object.keys(crChanges).forEach(k=>{ if(crChanges[k]!==''&&crChanges[k]!==undefined&&!crPerEnvMode.has(k)) changeKeys.add(k); });
   crPerEnvMode.forEach(k=>changeKeys.add(k));
 
+  // 收集自动同步的字段（跨所有环境）
+  const allAutoUpdated = new Set();
+  crSnapshots.forEach(s => {
+    const { autoUpdated } = crResolveEnvChanges(s.env, s.fields);
+    autoUpdated.forEach(f => allAutoUpdated.add(f));
+  });
+
   const summary = [...changeKeys].map(k=>{
     if (crPerEnvMode.has(k)) return `<span style="display:inline-block;background:#dbeafe;color:#1e40af;padding:2px 8px;border-radius:4px;font-size:12px;margin:2px">${escapeHtml(k)}: (按环境)</span>`;
     return `<span style="display:inline-block;background:#dbeafe;color:#1e40af;padding:2px 8px;border-radius:4px;font-size:12px;margin:2px">${escapeHtml(k)}: ${escapeHtml(String(crChanges[k]).substring(0,40))}</span>`;
   }).join(' ');
+  const autoSummary = [...allAutoUpdated].map(k=>
+    `<span style="display:inline-block;background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:4px;font-size:12px;margin:2px">🔗 ${escapeHtml(k)}: 随版本自动同步</span>`
+  ).join(' ');
 
   let envsHTML = '';
   if (crSnapshots.length>0) {
     envsHTML = crSnapshots.map(s=>{
-      const inBP = crBlueprintEnvs.has(s.env);
-      const bpTag = inBP ? '' : ' <span style="font-size:10px;color:#9ca3af">[蓝图外]</span>';
-      const merged = {...(s.fields||{})};
-      changeKeys.forEach(k=>{ merged[k] = crResolveForEnv(k, s.env); });
-      const rows = Object.keys(merged).filter(k=>!CR_READONLY_FIELDS.has(k) && !k.includes('[')).map(k=>{
+      const { merged, autoUpdated } = crResolveEnvChanges(s.env, s.fields);
+      const rows = Object.keys(merged).filter(k=>{
+        if (CR_READONLY_FIELDS.has(k) || k.includes('[')) return false;
         const orig = (s.fields||{})[k], nv = merged[k];
-        const changed = String(orig??'') !== String(nv??'');
+        return String(orig??'') !== String(nv??'');
+      }).map(k=>{
+        const orig = (s.fields||{})[k], nv = merged[k];
         const isArrayField = CR_ARRAY_FIELDS.includes(k);
-        const origDisp = isArrayField ? crArrSummary(orig) : summarizeValue(orig);
-        const newDisp = isArrayField ? crArrSummary(nv) : summarizeValue(nv);
-        return `<tr><td>${escapeHtml(k)}${isArrayField?' <span style="font-size:10px;color:var(--text-muted)">[数组]</span>':''}</td><td>${origDisp}</td><td>${changed?'<span class="cr-change-badge">⚡</span>':''} ${newDisp}</td></tr>`;
+        const origDisp = crFormatPreviewValue(orig);
+        const newDisp = crFormatPreviewValue(nv);
+        const autoTag = autoUpdated.has(k) ? ' <span style="font-size:10px;color:#f59e0b" title="随ArtifactVersion自动同步">🔗 自动同步</span>' : '';
+        return `<tr><td style="vertical-align:top">${escapeHtml(k)}${isArrayField?' <span style="font-size:10px;color:var(--text-muted)">[数组]</span>':''}${autoTag}</td><td>${origDisp}</td><td><span class="cr-change-badge">⚡</span> ${newDisp}</td></tr>`;
       }).join('');
-      const opacity = inBP ? '' : 'opacity:0.7;';
-      return `<div class="cr-preview-env" style="${opacity}">
-        <div class="cr-preview-env-header">📍 ${escapeHtml(s.env_name||s.env)}${bpTag} <span style="font-weight:400;font-size:11px;color:var(--text-muted)">${escapeHtml(s.env)}</span></div>
+      return `<div class="cr-preview-env">
+        <div class="cr-preview-env-header">📍 ${escapeHtml(s.env_name||s.env)} <span style="font-weight:400;font-size:11px;color:var(--text-muted)">${escapeHtml(s.env)}</span></div>
         <div class="cr-preview-env-body"><table class="data-table"><thead><tr><th>配置项</th><th>当前值</th><th>变更后</th></tr></thead><tbody>${rows}</tbody></table></div>
       </div>`;
     }).join('');
@@ -748,7 +1070,7 @@ function crStep4Preview() {
         <div style="margin-bottom:8px"><strong>标题:</strong> ${escapeHtml(crTitle)}</div>
         <div style="margin-bottom:8px"><strong>部署单元:</strong> ${escapeHtml(crSelectedDU?.code||'')}</div>
         <div style="margin-bottom:16px"><strong>蓝图:</strong> ${escapeHtml(crSelectedBP?.name||'')}</div>
-        <div>${summary||'<span style="color:var(--text-muted)">无变更</span>'}</div>
+        <div>${summary||'<span style="color:var(--text-muted)">无变更</span>'}${autoSummary?'<div style="margin-top:8px">'+autoSummary+'</div>':''}</div>
       </div>
       <div class="cr-section"><div class="cr-section-title">各环境变更预览</div>${envsHTML||'<div class="empty-state"><p>无环境数据</p></div>'}</div>`,
     actions: `
@@ -797,6 +1119,35 @@ window.crSubmitRelease = async function() {
   // 检查 ArtifactVersion 是否有值
   const av = changes.ArtifactVersion;
   if (!av || (typeof av==='object' && Object.keys(av).length===0)) { toast('ArtifactVersion为必填项','error'); return; }
+
+  // initDb tag 自动同步：如果 ArtifactVersion 有变更且用户未手动修改 initDb 类字段，
+  // 自动将各环境 initDb/initDbAuth/initDbFinal 中的 URL tag 替换为新版本
+  const avStr = typeof av === 'object' ? (av._default || Object.values(av)[0]) : av;
+  if (avStr) {
+    CR_INIT_DB_FIELDS.forEach(field => {
+      if (changes[field] !== undefined) return; // 用户已手动修改，跳过
+      // 计算每个环境的自动更新值
+      const envUpdated = {};
+      crSnapshots.forEach(s => {
+        const current = (s.fields||{})[field];
+        const updated = autoUpdateInitDbUrls(current, String(avStr));
+        if (updated !== null) {
+          try { envUpdated[s.env] = JSON.parse(updated); } catch(e) { envUpdated[s.env] = updated; }
+        }
+      });
+      if (Object.keys(envUpdated).length === 0) return;
+      // 判断所有环境是否更新结果相同
+      const vals = Object.values(envUpdated).map(JSON.stringify);
+      if (new Set(vals).size === 1) {
+        changes[field] = Object.values(envUpdated)[0];
+      } else {
+        changes[field] = {_default: Object.values(envUpdated)[0]};
+        Object.entries(envUpdated).forEach(([env, v]) => {
+          if (JSON.stringify(v) !== JSON.stringify(Object.values(envUpdated)[0])) changes[field][env] = v;
+        });
+      }
+    });
+  }
 
   try {
     await api('/releases', { method:'POST', body:JSON.stringify({ title:crTitle, deploy_unit_code:crSelectedDU.code, blueprint_id:crSelectedBP.id, changes }) });
@@ -1035,7 +1386,7 @@ async function renderApprovals(body) {
     if (stages.length===0) { body.innerHTML = '<div class="empty-state"><svg width="40" height="40" viewBox="0 0 40 40" fill="none"><path d="M12 22l6 6 10-10" stroke="#d1d5db" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="20" cy="20" r="14" stroke="#d1d5db" stroke-width="2" fill="none"/></svg><p>暂无待审批的发布</p></div>'; return; }
     body.innerHTML = `<div class="card"><div class="card-header"><div class="card-title">待审批 (${stages.length})</div></div>
       <table class="data-table"><thead><tr><th>发布单</th><th>环境</th><th>部署单元</th><th>版本</th><th>申请时间</th><th>操作</th></tr></thead><tbody>${stages.map(s=>`<tr>
-        <td><a href="#" onclick="loadPage('release-detail',${s.release_id});return false" style="color:var(--accent)">#${s.release_id}</a></td>
+        <td><a href="#" class="text-link" onclick="loadPage('release-detail',${s.release_id});return false">#${s.release_id}</a></td>
         <td>${escapeHtml(s.env_name||s.env_code)}</td>
         <td>-</td><td>-</td>
         <td>${fmtTime(s.created_at)}</td>
@@ -1131,6 +1482,81 @@ function computeLineDiff(aLines, bLines) {
   }
   return result;
 }
+
+// 蓝图详情模态框
+window.showBlueprintModal = async function(blueprintId, releaseId) {
+  if (!blueprintId) return;
+  const old = document.getElementById('bp-modal-root');
+  if (old) old.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'bp-modal-root';
+  overlay.className = 'diff-modal-overlay';
+  overlay.addEventListener('click', e => { if (e.target===overlay) overlay.remove(); });
+
+  const modal = document.createElement('div');
+  modal.className = 'diff-modal';
+  modal.innerHTML = `
+    <div class="diff-modal-header">
+      <h3>蓝图详情</h3>
+      <button class="diff-modal-close" onclick="document.getElementById('bp-modal-root').remove()">✕</button>
+    </div>
+    <div class="diff-modal-body" id="bp-modal-body" style="padding:16px"><div style="text-align:center;color:var(--text-muted)">加载中…</div></div>`;
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  try {
+    const bp = await api('/blueprints/' + blueprintId);
+    const nodes = bp.nodes || [];
+    const edges = bp.edges || [];
+    const bodyEl = modal.querySelector('#bp-modal-body');
+
+    // 构建前置环境映射：nodeId → [parentEnvCode]
+    const parentMap = new Map(); // nodeId → [parent node ids]
+    nodes.forEach(n => parentMap.set(n.id, []));
+    edges.forEach(e => parentMap.get(e.to_node_id)?.push(e.from_node_id));
+    const nodeById = new Map(nodes.map(n => [n.id, n]));
+
+    // 构建环境阶段状态映射：envCode → stage
+    const stages = releaseId ? (releaseStagesMap[releaseId] || []) : [];
+    const stageByEnv = new Map();
+    stages.forEach(s => stageByEnv.set(s.env_code, s));
+
+    const statusLabel = (status) => {
+      const map = { pending:'待处理', in_progress:'进行中', approved:'已通过', pushing:'推送中', completed:'已完成', rejected:'已驳回' };
+      return map[status] || status || '-';
+    };
+    const statusColor = (status) => {
+      const map = { pending:'#9ca3af', in_progress:'#3b82f6', approved:'#8b5cf6', pushing:'#f59e0b', completed:'#10b981', rejected:'#ef4444' };
+      return map[status] || '#9ca3af';
+    };
+
+    const rowsHTML = nodes.map(n => {
+      const parentNodes = (parentMap.get(n.id) || []).map(pid => nodeById.get(pid)).filter(Boolean);
+      const parentStr = parentNodes.length > 0
+        ? parentNodes.map(p => escapeHtml(p.env_name || p.env_code)).join('、')
+        : '<span style="color:var(--text-muted)">-</span>';
+      const stage = stageByEnv.get(n.env_code);
+      const st = stage?.status || 'pending';
+      return `<tr>
+        <td style="font-weight:500">${escapeHtml(n.env_name||n.env_code)}</td>
+        <td>${parentStr}</td>
+        <td><span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:500;color:#fff;background:${statusColor(st)}">${statusLabel(st)}</span></td>
+      </tr>`;
+    }).join('');
+
+    bodyEl.innerHTML = `
+      <div style="margin-bottom:12px"><strong>名称：</strong>${escapeHtml(bp.name)}</div>
+      ${bp.description ? `<div style="margin-bottom:12px;color:var(--text-muted)">${escapeHtml(bp.description)}</div>` : ''}
+      <table class="data-table">
+        <thead><tr><th>环境</th><th>前置环境</th><th>状态</th></tr></thead>
+        <tbody>${rowsHTML || '<tr><td colspan="3" style="color:var(--text-muted)">无环境节点</td></tr>'}</tbody>
+      </table>`;
+  } catch(e) {
+    const bodyEl = modal.querySelector('#bp-modal-body');
+    bodyEl.innerHTML = `<div style="color:#ef4444">加载失败: ${escapeHtml(e.message)}</div>`;
+  }
+};
 
 function showDiffModal(fieldName, snapshots) {
   const old = document.getElementById('diff-modal-root');

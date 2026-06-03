@@ -76,6 +76,7 @@ type Release struct {
 	SystemName     string                 `gorm:"size:256" json:"system_name"`
 	Version        string                 `gorm:"size:64" json:"version"`
 	BlueprintID    *uint                  `gorm:"index" json:"blueprint_id,omitempty"`
+	Blueprint      *PromotionBlueprint    `gorm:"foreignKey:BlueprintID" json:"blueprint,omitempty"`
 	ChangesJSON    string                 `gorm:"type:text" json:"-"`
 	Changes        map[string]interface{} `gorm:"-" json:"changes,omitempty"`
 	Status         string                 `gorm:"size:32;default:draft;index" json:"status"`

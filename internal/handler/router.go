@@ -37,7 +37,16 @@ func RegisterRoutes(
 	})
 	r.LoadHTMLGlob("web/templates/*")
 
+	// 静态文件禁用缓存（开发环境）
 	r.Static("/static", "web")
+	r.Use(func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/static/") {
+			c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+			c.Header("Pragma", "no-cache")
+			c.Header("Expires", "0")
+		}
+		c.Next()
+	})
 
 	r.GET("/auth/login", authHandler.MockLogin)
 	r.POST("/auth/login", authHandler.MockCallback)
