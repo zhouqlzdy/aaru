@@ -102,6 +102,7 @@ func RegisterRoutes(
 		api.GET("/admin/roles/:roleId", adminHandler.GetRole)
 		api.POST("/admin/roles", adminHandler.CreateRole)
 		api.PUT("/admin/users/:userId/roles", adminHandler.SetUserRoles)
+		api.PUT("/admin/users/:userId/access", adminHandler.UpdateUserAccess)
 		api.PUT("/admin/roles/:roleId/permissions", adminHandler.SetRolePermissions)
 	}
 

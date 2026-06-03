@@ -17,8 +17,32 @@ func NewAdminHandler(s *store.DBStore) *AdminHandler {
 	return &AdminHandler{store: s}
 }
 
+// requireAdmin 检查当前用户是否为 admin
+func (h *AdminHandler) requireAdmin(c *gin.Context) bool {
+	userID, ok := c.Get("user_id")
+	if !ok {
+		c.JSON(http.StatusForbidden, gin.H{"error": "admin access required"})
+		return false
+	}
+	user, err := h.store.GetUserWithRoles(userID.(uint))
+	if err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "admin access required"})
+		return false
+	}
+	for _, role := range user.Roles {
+		if role.Name == "admin" {
+			return true
+		}
+	}
+	c.JSON(http.StatusForbidden, gin.H{"error": "admin access required"})
+	return false
+}
+
 // ListUsers 用户列表
 func (h *AdminHandler) ListUsers(c *gin.Context) {
+	if !h.requireAdmin(c) {
+		return
+	}
 	users, err := h.store.ListUsers()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -29,6 +53,9 @@ func (h *AdminHandler) ListUsers(c *gin.Context) {
 
 // ListRoles 角色列表
 func (h *AdminHandler) ListRoles(c *gin.Context) {
+	if !h.requireAdmin(c) {
+		return
+	}
 	roles, err := h.store.ListRoles()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -39,6 +66,9 @@ func (h *AdminHandler) ListRoles(c *gin.Context) {
 
 // CreateRole 创建角色
 func (h *AdminHandler) CreateRole(c *gin.Context) {
+	if !h.requireAdmin(c) {
+		return
+	}
 	var req struct {
 		Name        string `json:"name" binding:"required"`
 		Description string `json:"description"`
@@ -60,6 +90,9 @@ func (h *AdminHandler) CreateRole(c *gin.Context) {
 
 // SetUserRoles 设置用户角色
 func (h *AdminHandler) SetUserRoles(c *gin.Context) {
+	if !h.requireAdmin(c) {
+		return
+	}
 	userID, err := strconv.ParseUint(c.Param("userId"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user id"})
@@ -79,8 +112,36 @@ func (h *AdminHandler) SetUserRoles(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "ok"})
 }
 
+// UpdateUserAccess 更新用户的可用竖井和环境
+func (h *AdminHandler) UpdateUserAccess(c *gin.Context) {
+	if !h.requireAdmin(c) {
+		return
+	}
+	userID, err := strconv.ParseUint(c.Param("userId"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user id"})
+		return
+	}
+	var req struct {
+		AllowedSilos string `json:"allowed_silos"`
+		AllowedEnvs  string `json:"allowed_envs"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.store.UpdateUserAccess(uint(userID), req.AllowedSilos, req.AllowedEnvs); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "ok"})
+}
+
 // SetRolePermissions 设置角色权限
 func (h *AdminHandler) SetRolePermissions(c *gin.Context) {
+	if !h.requireAdmin(c) {
+		return
+	}
 	roleID, err := strconv.ParseUint(c.Param("roleId"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid role id"})
@@ -102,6 +163,9 @@ func (h *AdminHandler) SetRolePermissions(c *gin.Context) {
 
 // GetRole 获取角色详情
 func (h *AdminHandler) GetRole(c *gin.Context) {
+	if !h.requireAdmin(c) {
+		return
+	}
 	roleID, err := strconv.ParseUint(c.Param("roleId"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid role id"})

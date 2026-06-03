@@ -146,13 +146,8 @@ func (b *BlueprintService) prepareAndValidate(in *BlueprintInput) error {
 		if in.Nodes[i].GateType == "api_hook" && in.Nodes[i].WebhookToken == "" {
 			in.Nodes[i].WebhookToken = genToken()
 		}
-		if in.Nodes[i].GateType == "manual" {
-			role, err := b.ensureApprovalRole(in.Nodes[i].EnvCode, in.Nodes[i].EnvName)
-			if err != nil {
-				return fmt.Errorf("创建审批角色失败: %w", err)
-			}
-			in.Nodes[i].ApproveRoleID = &role.ID
-		}
+		// approver 角色已废弃，改用 User.allowed_silos + allowed_envs 控制权限
+		in.Nodes[i].ApproveRoleID = nil
 	}
 	seenEnv := make(map[string]bool)
 	for _, n := range in.Nodes {

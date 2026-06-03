@@ -28,6 +28,19 @@ func (r *ReleaseService) CreateRelease(title, duCode string, createdByID uint, b
 		return nil, fmt.Errorf("list environments: %w", err)
 	}
 
+	// 查找 DU 所属 silo 用于权限校验
+	var siloCode string
+	for _, env := range allEnvs {
+		du, err := r.dmdb.GetDeployUnitByCode(env.Env, duCode)
+		if err == nil && du != nil && du.BizSerial != "" {
+			siloCode = du.SiloCode
+			break
+		}
+	}
+	if !r.permSvc.CanDeploy(createdByID, siloCode) {
+		return nil, fmt.Errorf("permission denied: no deploy access to silo %s", siloCode)
+	}
+
 	var duInfo *model.DeployUnitInfo
 	for _, env := range allEnvs {
 		du, err := r.dmdb.GetDeployUnitByCode(env.Env, duCode)
@@ -250,12 +263,12 @@ func autoUpdateInitDbTag(currentVal string, newVersion string) string {
 }
 
 func (r *ReleaseService) StartRelease(releaseID, userID uint) (*model.Release, error) {
-	if !r.permSvc.CanAction(userID, "deploy") {
-		return nil, fmt.Errorf("permission denied")
-	}
 	release, err := r.store.GetReleaseWithStages(releaseID)
 	if err != nil {
 		return nil, err
+	}
+	if !r.permSvc.CanDeploy(userID, release.SiloCode) {
+		return nil, fmt.Errorf("permission denied")
 	}
 	if release.Status != "draft" {
 		return nil, fmt.Errorf("release not in draft")
@@ -461,9 +474,6 @@ func (r *ReleaseService) checkReleaseCompleted(release *model.Release) {
 }
 
 func (r *ReleaseService) ApproveStage(stageID, userID uint, comment string) (*model.Release, error) {
-	if !r.permSvc.CanAction(userID, "approve") {
-		return nil, fmt.Errorf("permission denied")
-	}
 	var stage model.ReleaseStage
 	if err := r.store.DB().First(&stage, stageID).Error; err != nil {
 		return nil, fmt.Errorf("stage not found")
@@ -475,6 +485,9 @@ func (r *ReleaseService) ApproveStage(stageID, userID uint, comment string) (*mo
 	release, err := r.store.GetReleaseWithStages(stage.ReleaseID)
 	if err != nil {
 		return nil, err
+	}
+	if !r.permSvc.CanApprove(userID, release.SiloCode, stage.EnvCode) {
+		return nil, fmt.Errorf("permission denied")
 	}
 
 	// 审批通过
@@ -503,15 +516,19 @@ func (r *ReleaseService) ApproveStage(stageID, userID uint, comment string) (*mo
 }
 
 func (r *ReleaseService) RejectStage(stageID, userID uint, comment string) (*model.Release, error) {
-	if !r.permSvc.CanAction(userID, "approve") {
-		return nil, fmt.Errorf("permission denied")
-	}
 	var stage model.ReleaseStage
 	if err := r.store.DB().First(&stage, stageID).Error; err != nil {
 		return nil, fmt.Errorf("stage not found")
 	}
 	if stage.Status != "in_progress" {
 		return nil, fmt.Errorf("stage not in progress")
+	}
+	release, err := r.store.GetReleaseWithStages(stage.ReleaseID)
+	if err != nil {
+		return nil, err
+	}
+	if !r.permSvc.CanApprove(userID, release.SiloCode, stage.EnvCode) {
+		return nil, fmt.Errorf("permission denied")
 	}
 	stage.Status = "rejected"
 	stage.ApprovedByID = &userID
@@ -522,10 +539,6 @@ func (r *ReleaseService) RejectStage(stageID, userID uint, comment string) (*mod
 		return nil, fmt.Errorf("save stage: %w", err)
 	}
 
-	release, err := r.store.GetReleaseWithStages(stage.ReleaseID)
-	if err != nil {
-		return nil, fmt.Errorf("get release: %w", err)
-	}
 	release.Status = "failed"
 	if err := r.store.DB().Save(release).Error; err != nil {
 		return nil, fmt.Errorf("save release: %w", err)
@@ -559,9 +572,6 @@ func (r *ReleaseService) RollbackRelease(releaseID, userID uint) (*model.Release
 }
 
 func (r *ReleaseService) PromoteToNext(stageID, userID uint) (*model.Release, error) {
-	if !r.permSvc.CanAction(userID, "deploy") {
-		return nil, fmt.Errorf("permission denied")
-	}
 	var stage model.ReleaseStage
 	if err := r.store.DB().First(&stage, stageID).Error; err != nil {
 		return nil, fmt.Errorf("stage not found")
@@ -572,6 +582,9 @@ func (r *ReleaseService) PromoteToNext(stageID, userID uint) (*model.Release, er
 	release, err := r.store.GetReleaseWithStages(stage.ReleaseID)
 	if err != nil {
 		return nil, fmt.Errorf("get release: %w", err)
+	}
+	if !r.permSvc.CanDeploy(userID, release.SiloCode) {
+		return nil, fmt.Errorf("permission denied")
 	}
 
 	if release.BlueprintID == nil {
@@ -611,9 +624,6 @@ func (r *ReleaseService) PromoteToNext(stageID, userID uint) (*model.Release, er
 
 // RetryPush 重试停留在 pushing 状态的 stage
 func (r *ReleaseService) RetryPush(stageID, userID uint) (*model.Release, error) {
-	if !r.permSvc.CanAction(userID, "deploy") {
-		return nil, fmt.Errorf("permission denied")
-	}
 	var stage model.ReleaseStage
 	if err := r.store.DB().First(&stage, stageID).Error; err != nil {
 		return nil, fmt.Errorf("stage not found")
@@ -623,6 +633,12 @@ func (r *ReleaseService) RetryPush(stageID, userID uint) (*model.Release, error)
 	}
 
 	release, err := r.store.GetReleaseWithStages(stage.ReleaseID)
+	if err != nil {
+		return nil, err
+	}
+	if !r.permSvc.CanDeploy(userID, release.SiloCode) {
+		return nil, fmt.Errorf("permission denied")
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -651,7 +667,34 @@ func (r *ReleaseService) GetPendingApprovals(userID uint) ([]model.ReleaseStage,
 	if !r.permSvc.CanAction(userID, "approve") {
 		return nil, fmt.Errorf("permission denied")
 	}
-	return r.store.GetStagesByStatus("in_progress")
+
+	allStages, err := r.store.GetStagesByStatus("in_progress")
+	if err != nil {
+		return nil, err
+	}
+
+	// admin 看所有
+	user, _ := r.store.GetUserWithRoles(userID)
+	if user != nil {
+		for _, role := range user.Roles {
+			if role.Name == "admin" {
+				return allStages, nil
+			}
+		}
+	}
+
+	// 按用户 silo + env 过滤
+	var filtered []model.ReleaseStage
+	for _, stage := range allStages {
+		release, err := r.store.GetReleaseWithStages(stage.ReleaseID)
+		if err != nil {
+			continue
+		}
+		if r.permSvc.CanApprove(userID, release.SiloCode, stage.EnvCode) {
+			filtered = append(filtered, stage)
+		}
+	}
+	return filtered, nil
 }
 
 // WebhookPromote 通过webhook token自动晋级（由外部系统调用）

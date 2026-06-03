@@ -76,6 +76,31 @@ func (s *DBStore) SetUserRoles(userID uint, roleIDs []uint) error {
 	}
 	return s.db.Model(&u).Association("Roles").Replace(&roles)
 }
+func (s *DBStore) UpdateUserAccess(userID uint, allowedSilos, allowedEnvs string) error {
+	return s.db.Model(&model.User{}).Where("id = ?", userID).Updates(map[string]interface{}{
+		"allowed_silos": allowedSilos,
+		"allowed_envs":  allowedEnvs,
+	}).Error
+}
+
+// SetAdminWildcard 为所有 admin 角色用户设置 allowed_silos="*"
+func (s *DBStore) SetAdminWildcard() {
+	s.db.Exec(`UPDATE users SET allowed_silos = '*', allowed_envs = '*' WHERE (allowed_silos IS NULL OR allowed_silos = '') AND id IN (
+		SELECT user_id FROM user_roles WHERE role_id IN (SELECT id FROM roles WHERE name = 'admin')
+	)`)
+}
+
+// CleanupApproverRoles 清理废弃的 approver-* 环境审批角色
+func (s *DBStore) CleanupApproverRoles() {
+	// 解除蓝图节点对 approver 角色的引用
+	s.db.Exec(`UPDATE blueprint_nodes SET approve_role_id = NULL WHERE approve_role_id IN (SELECT id FROM roles WHERE name LIKE 'approver-%')`)
+	// 解除用户与 approver 角色的关联
+	s.db.Exec(`DELETE FROM user_roles WHERE role_id IN (SELECT id FROM roles WHERE name LIKE 'approver-%')`)
+	// 删除 approver 角色的权限
+	s.db.Exec(`DELETE FROM permissions WHERE role_id IN (SELECT id FROM roles WHERE name LIKE 'approver-%')`)
+	// 删除 approver 角色
+	s.db.Exec(`DELETE FROM roles WHERE name LIKE 'approver-%'`)
+}
 
 // ========== Role ==========
 func (s *DBStore) CreateRole(r *model.Role) error { return s.db.Create(r).Error }

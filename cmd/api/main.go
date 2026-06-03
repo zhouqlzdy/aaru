@@ -84,6 +84,10 @@ func initDefaults(dbStore *store.DBStore) {
 				{DeployUnitCode: "*", Action: "view"},
 			})
 		}
+		// 为 admin 用户补充 allowed_silos="*"
+		dbStore.SetAdminWildcard()
+		// 清理废弃的 approver-* 环境审批角色
+		dbStore.CleanupApproverRoles()
 		return
 	}
 	adminRole := &model.Role{Name: "admin", Description: "管理员，拥有所有权限"}

@@ -37,8 +37,11 @@ async function checkAuth() {
     currentUser = data;
     document.getElementById('user-name').textContent = data.username;
     document.getElementById('user-avatar').textContent = (data.username||'A')[0].toUpperCase();
-    const roles = (data.roles||[]).map(r=>r.name).join(', ');
-    document.getElementById('user-role').textContent = roles || '无角色';
+    const roles = (data.roles||[]).map(r=>r.name);
+    document.getElementById('user-role').textContent = roles.join(', ') || '无角色';
+    if (roles.includes('admin')) {
+      document.getElementById('nav-admin').style.display = '';
+    }
   } catch(e) { window.location.href = '/auth/login'; }
 }
 
@@ -72,7 +75,9 @@ async function loadPage(page, param) {
     case 'deploy-units': setPage('deploy-units','部署单元','浏览各环境的部署单元'); renderDeployUnits(body); break;
     case 'approvals': setPage('approvals','审批中心','处理待审批的发布'); renderApprovals(body); break;
     case 'blueprints': loadPageBlueprintList(body); break;
-    case 'admin': setPage('admin','权限管理','管理用户角色和权限'); renderAdmin(body); break;
+    case 'admin':
+      if (!currentUser?.roles?.some(r=>r.name==='admin')) { toast('无权限访问','error'); loadPage('releases'); return; }
+      setPage('admin','权限管理','管理用户角色和权限'); renderAdmin(body); break;
     default: loadPage('releases');
   }
 }
@@ -442,6 +447,14 @@ async function retryPush(id) {
   catch(e) { toast(e.message,'error'); }
 }
 
+// 根据用户 allowed_silos 过滤 DU 列表
+function filterDUsByPermission(dus) {
+  if (!currentUser || !currentUser.allowed_silos) return [];
+  if (currentUser.allowed_silos === '*') return dus;
+  const allowed = currentUser.allowed_silos.split(',').map(s=>s.trim()).filter(Boolean);
+  if (allowed.length === 0) return [];
+  return dus.filter(d => allowed.includes(d.silo));
+}
 
 // ===== Create Release Wizard =====
 let crStep = 1;
@@ -519,8 +532,10 @@ function crRenderStep(body) {
 
 // ===== Step 1: Select DU + Blueprint =====
 function crStep1() {
+  // 按用户权限过滤 DU 列表
+  const permittedDUs = filterDUsByPermission(crDUList);
   const siloSet = new Set(), sysSet = new Set();
-  crDUList.forEach(d => { if(d.silo) siloSet.add(d.silo); if(d.system) sysSet.add(d.system); });
+  permittedDUs.forEach(d => { if(d.silo) siloSet.add(d.silo); if(d.system) sysSet.add(d.system); });
   const silos = [...siloSet].sort(), systems = [...sysSet].sort();
   return {
     content: `
@@ -551,7 +566,7 @@ function crStep1() {
         </div>
         <div style="display:flex;flex-direction:column;min-height:0;overflow:hidden">
           <div class="cr-section-title" style="flex-shrink:0;margin-bottom:0">选择部署单元</div>
-          <div id="cr-du-list" style="flex:1;overflow-y:auto">${crRenderDUList(crDUList)}</div>
+          <div id="cr-du-list" style="flex:1;overflow-y:auto">${crRenderDUList(permittedDUs)}</div>
         </div>
       </div>`,
     actions: `
@@ -575,7 +590,7 @@ function crRenderDUList(dus) {
 window.crFilterDUList = function() {
   const silo = document.getElementById('cr-silo')?.value||'';
   const sys = document.getElementById('cr-system')?.value||'';
-  let dus = crDUList;
+  let dus = filterDUsByPermission(crDUList);
   if (silo) dus = dus.filter(d=>d.silo===silo);
   if (sys) dus = dus.filter(d=>d.system===sys);
   document.getElementById('cr-du-list').innerHTML = crRenderDUList(dus);
@@ -1210,12 +1225,14 @@ function brStep1() {
     api('/blueprints').then(d => { brBlueprints = d.blueprints||[]; if(brStep===1) renderBatchRelease(document.getElementById('content-body'), document.getElementById('header-actions')); });
   }
 
+  // 按用户权限过滤 DU 列表
+  const permittedDUs = filterDUsByPermission(brDUList);
   const siloSet = new Set(), sysSet = new Set();
-  brDUList.forEach(d => { if(d.silo) siloSet.add(d.silo); if(d.system) sysSet.add(d.system); });
+  permittedDUs.forEach(d => { if(d.silo) siloSet.add(d.silo); if(d.system) sysSet.add(d.system); });
   const silos = [...siloSet].sort(), systems = [...sysSet].sort();
 
   // 应用过滤条件
-  let filteredDUs = brDUList;
+  let filteredDUs = permittedDUs;
   if (brFilterSilo) filteredDUs = filteredDUs.filter(d=>d.silo===brFilterSilo);
   if (brFilterSystem) filteredDUs = filteredDUs.filter(d=>d.system===brFilterSystem);
   const duListHTML = brRenderDUList(filteredDUs);
@@ -1271,7 +1288,7 @@ function brRenderDUList(dus) {
 window.brFilterDUList = function() {
   brFilterSilo = document.getElementById('br-silo')?.value||'';
   brFilterSystem = document.getElementById('br-system')?.value||'';
-  let dus = brDUList;
+  let dus = filterDUsByPermission(brDUList);
   if (brFilterSilo) dus = dus.filter(d=>d.silo===brFilterSilo);
   if (brFilterSystem) dus = dus.filter(d=>d.system===brFilterSystem);
   document.getElementById('br-du-list').innerHTML = brRenderDUList(dus);
@@ -1692,13 +1709,26 @@ async function renderAdmin(body) {
     const users = usersData.users||[];
     const roles = rolesData.roles||[];
 
+    function accessDisplay(val) {
+      if (!val) return '<span style="color:var(--text-muted)">未配置</span>';
+      if (val === '*') return '<span style="color:#16a34a">全部</span>';
+      return escapeHtml(val);
+    }
+    function envDisplay(u) {
+      const hasApprove = (u.roles||[]).some(r => r.name === 'admin' || r.name === 'operator');
+      if (!hasApprove) return '<span style="color:var(--text-muted)">-</span>';
+      return accessDisplay(u.allowed_envs);
+    }
+
     body.innerHTML = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:24px">
-      <div class="card"><div class="card-header"><div class="card-title">用户管理</div><button class="btn btn-sm btn-primary" onclick="showCreateRole()">+ 新建角色</button></div>
-        <table class="data-table"><thead><tr><th>用户名</th><th>邮箱</th><th>角色</th></tr></thead><tbody>${users.map(u=>`<tr>
+      <div class="card"><div class="card-header"><div class="card-title">用户管理</div></div>
+        <table class="data-table"><thead><tr><th>用户名</th><th>邮箱</th><th>角色</th><th>可用竖井</th><th>可用环境</th></tr></thead><tbody>${users.map(u=>`<tr>
           <td><strong>${escapeHtml(u.username)}</strong></td>
           <td>${escapeHtml(u.email||'')}</td>
-          <td>${(u.roles||[]).map(r=>`<span class="status-badge status-pending">${escapeHtml(r.name)}</span>`).join(' ')||'<span style="color:var(--text-muted)">无</span>'}</td>
-        </tr>`).join('')||'<tr><td colspan="3" style="text-align:center;color:var(--text-muted)">暂无用户</td></tr>'}</tbody></table>
+          <td>${(u.roles||[]).map(r=>`<span class="status-badge status-pending">${escapeHtml(r.name)}</span>`).join(' ')||'<span style="color:var(--text-muted)">无</span>'} <a href="#" class="text-link" style="font-size:11px" onclick="editUserRoles(${u.id},'${escapeHtml(u.username)}',${JSON.stringify((u.roles||[]).map(r=>r.id))});return false">编辑</a></td>
+          <td>${accessDisplay(u.allowed_silos)} <a href="#" class="text-link" style="font-size:11px" onclick="editUserAccess(${u.id},'${escapeHtml(u.username)}','${escapeHtml(u.allowed_silos||'')}','${escapeHtml(u.allowed_envs||'')}');return false">编辑</a></td>
+          <td>${envDisplay(u)}</td>
+        </tr>`).join('')||'<tr><td colspan="5" style="text-align:center;color:var(--text-muted)">暂无用户</td></tr>'}</tbody></table>
       </div>
       <div class="card"><div class="card-header"><div class="card-title">角色管理</div><button class="btn btn-sm btn-primary" onclick="showCreateRole()">+ 新建角色</button></div>
         <table class="data-table"><thead><tr><th>角色名</th><th>描述</th><th>权限</th></tr></thead><tbody>${roles.map(r=>`<tr>
@@ -1710,6 +1740,129 @@ async function renderAdmin(body) {
     </div>`;
   } catch(e) { body.innerHTML = '<div class="empty-state"><p>加载失败: '+escapeHtml(e.message)+'</p></div>'; }
 }
+
+window.editUserAccess = async function(userId, username, curSilos, curEnvs) {
+  // 获取竖井列表（从 DevOps API /du-list 提取唯一 silo）
+  let siloOptions = [];
+  try {
+    const data = await api('/du-list');
+    const siloSet = new Set();
+    (data.deploy_units||[]).forEach(d => { if (d.silo) siloSet.add(d.silo); });
+    siloOptions = [...siloSet].sort();
+  } catch(e) {}
+
+  // 获取环境列表（从 DMDB /environments）
+  let envOptions = [];
+  try {
+    const data = await api('/environments');
+    envOptions = (data.envs||[]).map(e => e.Env || e.name || e.Name || '').filter(Boolean);
+  } catch(e) {}
+
+  const overlay = document.createElement('div');
+  overlay.className = 'diff-modal-overlay';
+  overlay.addEventListener('click', e => { if (e.target===overlay) overlay.remove(); });
+  const modal = document.createElement('div');
+  modal.className = 'diff-modal';
+  modal.style.maxWidth = '500px';
+
+  function renderCheckboxes(options, selected, label) {
+    const selectedSet = new Set(selected === '*' ? options : (selected ? selected.split(',').map(s=>s.trim()) : []));
+    const isAll = selected === '*';
+    const items = options.map(o =>
+      `<label style="display:inline-flex;align-items:center;gap:4px;margin:4px 8px 4px 0;font-size:13px">
+        <input type="checkbox" value="${escapeHtml(o)}" ${selectedSet.has(o)?'checked':''}> ${escapeHtml(o)}
+      </label>`
+    ).join('');
+    return `<div style="margin-bottom:16px">
+      <label style="font-weight:600;font-size:13px;margin-bottom:8px;display:block">${label}</label>
+      <label style="display:inline-flex;align-items:center;gap:4px;margin-bottom:8px;font-size:13px">
+        <input type="checkbox" id="acc-all-${label}" ${isAll?'checked':''} onchange="this.closest('.diff-modal').querySelectorAll('.acc-${label} input[type=checkbox]').forEach(c=>c.checked=this.checked)"> 全部（*）
+      </label>
+      <div class="acc-${label}" style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:8px">${items}</div>
+    </div>`;
+  }
+
+  modal.innerHTML = `
+    <div class="diff-modal-header"><h3>配置权限 - ${escapeHtml(username)}</h3><button class="diff-modal-close" onclick="this.closest('.diff-modal-overlay').remove()">✕</button></div>
+    <div class="diff-modal-body" style="padding:16px">
+      ${renderCheckboxes(siloOptions, curSilos, '可用竖井')}
+      ${renderCheckboxes(envOptions, curEnvs, '可用环境')}
+      <div style="text-align:right;margin-top:16px">
+        <button class="btn btn-secondary" onclick="this.closest('.diff-modal-overlay').remove()">取消</button>
+        <button class="btn btn-primary" onclick="saveUserAccess(${userId},this)">保存</button>
+      </div>
+    </div>`;
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+};
+
+window.saveUserAccess = async function(userId, btn) {
+  const modal = btn.closest('.diff-modal');
+  function collectValues(cls, isAllId) {
+    const allCb = modal.querySelector('#'+isAllId);
+    if (allCb && allCb.checked) return '*';
+    const vals = [];
+    modal.querySelectorAll('.'+cls+' input[type=checkbox]:checked').forEach(c => vals.push(c.value));
+    return vals.join(',');
+  }
+  const silos = collectValues('acc-可用竖井', 'acc-all-可用竖井');
+  const envs = collectValues('acc-可用环境', 'acc-all-可用环境');
+  try {
+    await api('/admin/users/'+userId+'/access', { method:'PUT', body:JSON.stringify({allowed_silos:silos, allowed_envs:envs}) });
+    toast('权限已更新','success');
+    modal.closest('.diff-modal-overlay').remove();
+    loadPage('admin');
+  } catch(e) { toast(e.message,'error'); }
+};
+
+window.editUserRoles = async function(userId, username, currentRoleIds) {
+  // 获取所有角色
+  let allRoles = [];
+  try {
+    const data = await api('/admin/roles');
+    allRoles = data.roles || [];
+  } catch(e) { toast('获取角色列表失败','error'); return; }
+
+  const currentSet = new Set(currentRoleIds);
+  const overlay = document.createElement('div');
+  overlay.className = 'diff-modal-overlay';
+  overlay.addEventListener('click', e => { if (e.target===overlay) overlay.remove(); });
+  const modal = document.createElement('div');
+  modal.className = 'diff-modal';
+  modal.style.maxWidth = '400px';
+
+  const checkboxes = allRoles.map(r =>
+    `<label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px">
+      <input type="checkbox" value="${r.id}" ${currentSet.has(r.id)?'checked':''}>
+      <span><strong>${escapeHtml(r.name)}</strong> <span style="color:var(--text-muted);font-size:11px">${escapeHtml(r.description||'')}</span></span>
+    </label>`
+  ).join('');
+
+  modal.innerHTML = `
+    <div class="diff-modal-header"><h3>编辑角色 - ${escapeHtml(username)}</h3><button class="diff-modal-close" onclick="this.closest('.diff-modal-overlay').remove()">✕</button></div>
+    <div class="diff-modal-body" style="padding:16px">
+      <div style="max-height:300px;overflow-y:auto">${checkboxes}</div>
+      <div style="text-align:right;margin-top:16px">
+        <button class="btn btn-secondary" onclick="this.closest('.diff-modal-overlay').remove()">取消</button>
+        <button class="btn btn-primary" onclick="saveUserRoles(${userId},this)">保存</button>
+      </div>
+    </div>`;
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+};
+
+window.saveUserRoles = async function(userId, btn) {
+  const modal = btn.closest('.diff-modal');
+  const roleIds = [];
+  modal.querySelectorAll('input[type=checkbox]:checked').forEach(cb => roleIds.push(parseInt(cb.value)));
+  try {
+    await api('/admin/users/'+userId+'/roles', { method:'PUT', body:JSON.stringify({role_ids:roleIds}) });
+    toast('角色已更新','success');
+    modal.closest('.diff-modal-overlay').remove();
+    loadPage('admin');
+  } catch(e) { toast(e.message,'error'); }
+};
 
 function showCreateRole() {
   const name = prompt('输入角色名:');
