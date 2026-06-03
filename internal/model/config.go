@@ -29,8 +29,12 @@ type DevOpsConfig struct {
 }
 
 type GitlabMock struct {
-	Enabled bool     `yaml:"enabled"`
-	Users   []string `yaml:"users"`
+	Enabled    bool     `yaml:"enabled"`
+	Users      []string `yaml:"users"`
+	URL        string   `yaml:"url"`         // GitLab URL, e.g. http://localhost
+	AppID      string   `yaml:"app_id"`      // OAuth Application ID
+	AppSecret  string   `yaml:"app_secret"`  // OAuth Application Secret
+	CallbackURL string  `yaml:"callback_url"` // e.g. http://localhost:8080/auth/gitlab/callback
 }
 
 type EnvConfig struct {

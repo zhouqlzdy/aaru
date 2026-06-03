@@ -52,6 +52,7 @@ func RegisterRoutes(
 	r.POST("/auth/login", authHandler.MockCallback)
 	r.GET("/auth/callback", authHandler.MockCallback)
 	r.POST("/auth/callback", authHandler.MockCallback)
+	r.GET("/auth/gitlab/callback", authHandler.GitlabCallback)
 
 	r.GET("/api/hooks/promote/:stageId", releaseHandler.WebhookPromote)
 	r.POST("/api/hooks/promote/:stageId", releaseHandler.WebhookPromote)

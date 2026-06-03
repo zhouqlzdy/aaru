@@ -28,6 +28,14 @@ func main() {
 	}
 
 	authService := service.NewAuthService(config.JwtSecret)
+	if config.Gitlab.AppID != "" {
+		gitlabURL := config.Gitlab.URL
+		if gitlabURL == "" {
+			gitlabURL = "http://localhost"
+		}
+		authService.ConfigureGitlab(gitlabURL, config.Gitlab.AppID, config.Gitlab.AppSecret, config.Gitlab.CallbackURL)
+		log.Printf("GitLab SSO enabled: %s", gitlabURL)
+	}
 	dmdbClient := service.NewDMDBClient(config.DMDB.ServerAddress, config.DevOps.ServerAddress, config.DMDB.Token)
 	permService := service.NewPermissionService(dbStore)
 	bpService := service.NewBlueprintService(dbStore)
@@ -61,6 +69,21 @@ func loadConfig() *model.Config {
 func initDefaults(dbStore *store.DBStore) {
 	roles, _ := dbStore.ListRoles()
 	if len(roles) > 0 {
+		// 补充创建 viewer 角色（如果不存在）
+		hasViewer := false
+		for _, r := range roles {
+			if r.Name == "viewer" {
+				hasViewer = true
+				break
+			}
+		}
+		if !hasViewer {
+			viewerRole := &model.Role{Name: "viewer", Description: "观察者，仅查看"}
+			dbStore.CreateRole(viewerRole)
+			dbStore.SetRolePermissions(viewerRole.ID, []model.Permission{
+				{DeployUnitCode: "*", Action: "view"},
+			})
+		}
 		return
 	}
 	adminRole := &model.Role{Name: "admin", Description: "管理员，拥有所有权限"}
@@ -69,6 +92,8 @@ func initDefaults(dbStore *store.DBStore) {
 	dbStore.CreateRole(devRole)
 	opsRole := &model.Role{Name: "operator", Description: "运维人员，可以审批"}
 	dbStore.CreateRole(opsRole)
+	viewerRole := &model.Role{Name: "viewer", Description: "观察者，仅查看"}
+	dbStore.CreateRole(viewerRole)
 
 	dbStore.SetRolePermissions(adminRole.ID, []model.Permission{
 		{DeployUnitCode: "*", Action: "deploy"},
@@ -82,6 +107,9 @@ func initDefaults(dbStore *store.DBStore) {
 	})
 	dbStore.SetRolePermissions(opsRole.ID, []model.Permission{
 		{DeployUnitCode: "*", Action: "approve"},
+		{DeployUnitCode: "*", Action: "view"},
+	})
+	dbStore.SetRolePermissions(viewerRole.ID, []model.Permission{
 		{DeployUnitCode: "*", Action: "view"},
 	})
 }

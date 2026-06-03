@@ -26,7 +26,9 @@ func NewAuthHandler(authService *service.AuthService, store *store.DBStore, mock
 // MockLogin 模拟Gitlab SSO登录页面
 func (h *AuthHandler) MockLogin(c *gin.Context) {
 	c.HTML(http.StatusOK, "login.html", gin.H{
-		"Users": h.mockUsers,
+		"Users":            h.mockUsers,
+		"GitlabEnabled":    h.authService.IsGitlabConfigured(),
+		"GitlabAuthURL":    h.authService.GitlabAuthURL(),
 	})
 }
 
@@ -71,10 +73,10 @@ func (h *AuthHandler) MockCallback(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "create user failed"})
 			return
 		}
-		// 新用户自动分配admin角色
+		// 新用户默认分配 viewer 角色
 		roles, _ := h.store.ListRoles()
 		for _, role := range roles {
-			if role.Name == "admin" {
+			if role.Name == "viewer" {
 				h.store.SetUserRoles(user.ID, []uint{role.ID})
 				break
 			}
@@ -111,4 +113,89 @@ func (h *AuthHandler) CurrentUser(c *gin.Context) {
 func (h *AuthHandler) Logout(c *gin.Context) {
 	c.SetCookie("token", "", -1, "/", "", false, true)
 	c.Redirect(http.StatusFound, "/auth/login")
+}
+
+// GitlabCallback GitLab OAuth2 回调
+func (h *AuthHandler) GitlabCallback(c *gin.Context) {
+	// GitLab 可能返回 error 参数（如用户拒绝授权）
+	if errMsg := c.Query("error"); errMsg != "" {
+		c.HTML(http.StatusUnauthorized, "login.html", gin.H{
+			"Error":          "GitLab授权失败: " + errMsg,
+			"GitlabEnabled":  h.authService.IsGitlabConfigured(),
+			"GitlabAuthURL":  h.authService.GitlabAuthURL(),
+		})
+		return
+	}
+	code := c.Query("code")
+	if code == "" {
+		c.HTML(http.StatusBadRequest, "login.html", gin.H{
+			"Error":          "授权码缺失",
+			"GitlabEnabled":  h.authService.IsGitlabConfigured(),
+			"GitlabAuthURL":  h.authService.GitlabAuthURL(),
+		})
+		return
+	}
+
+	// 用 code 换取 GitLab 用户信息
+	gitlabUser, err := h.authService.ExchangeCode(code)
+	if err != nil {
+		c.HTML(http.StatusUnauthorized, "login.html", gin.H{
+			"Error":          "GitLab认证失败: " + err.Error(),
+			"GitlabEnabled":  h.authService.IsGitlabConfigured(),
+			"GitlabAuthURL":  h.authService.GitlabAuthURL(),
+		})
+		return
+	}
+
+	// 用 GitLab username 查找或创建 Aaru 用户
+	user, err := h.store.GetUserByUsername(gitlabUser.Username)
+	if err != nil {
+		user = &model.User{
+			Username:  gitlabUser.Username,
+			Email:     gitlabUser.Email,
+			GitlabID:  gitlabUser.ID,
+			AvatarURL: gitlabUser.Avatar,
+		}
+		if user.Email == "" {
+			user.Email = gitlabUser.Username + "@gitlab.local"
+		}
+		if err := h.store.CreateUser(user); err != nil {
+			c.HTML(http.StatusInternalServerError, "login.html", gin.H{
+				"Error":          "创建用户失败: " + err.Error(),
+				"GitlabEnabled":  h.authService.IsGitlabConfigured(),
+				"GitlabAuthURL":  h.authService.GitlabAuthURL(),
+			})
+			return
+		}
+		// 新用户默认分配 viewer 角色
+		roles, _ := h.store.ListRoles()
+		for _, role := range roles {
+			if role.Name == "viewer" {
+				h.store.SetUserRoles(user.ID, []uint{role.ID})
+				break
+			}
+		}
+	}
+
+	// 更新 GitLab 信息
+	if user.GitlabID == 0 {
+		user.GitlabID = gitlabUser.ID
+	}
+	if gitlabUser.Avatar != "" {
+		user.AvatarURL = gitlabUser.Avatar
+	}
+	h.store.DB().Save(user)
+
+	token, err := h.authService.GenerateToken(user)
+	if err != nil {
+		c.HTML(http.StatusInternalServerError, "login.html", gin.H{
+			"Error":          "生成token失败",
+			"GitlabEnabled":  h.authService.IsGitlabConfigured(),
+			"GitlabAuthURL":  h.authService.GitlabAuthURL(),
+		})
+		return
+	}
+
+	c.SetCookie("token", token, 86400, "/", "", false, true)
+	c.Redirect(http.StatusFound, "/")
 }
