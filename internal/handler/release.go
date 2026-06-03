@@ -54,6 +54,35 @@ func (h *ReleaseHandler) CreateRelease(c *gin.Context) {
 	c.JSON(http.StatusCreated, release)
 }
 
+type BatchCreateReleaseRequest struct {
+	Title       string   `json:"title" binding:"required"`
+	DUCodes     []string `json:"du_codes" binding:"required"`
+	BlueprintID uint     `json:"blueprint_id" binding:"required"`
+	Version     string   `json:"version" binding:"required"`
+}
+
+func (h *ReleaseHandler) BatchCreateRelease(c *gin.Context) {
+	var req BatchCreateReleaseRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.BlueprintID == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "blueprint_id is required"})
+		return
+	}
+	userID := c.GetUint("user_id")
+	releases, err := h.releaseService.BatchCreateRelease(
+		req.Title, req.DUCodes, userID,
+		req.BlueprintID, req.Version,
+	)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"releases": releases, "count": len(releases)})
+}
+
 func (h *ReleaseHandler) ListReleases(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))

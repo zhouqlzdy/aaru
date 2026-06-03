@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"aaru/internal/model"
@@ -112,6 +113,140 @@ func (r *ReleaseService) CreateRelease(title, duCode string, createdByID uint, b
 		return nil, fmt.Errorf("reload release: %w", err)
 	}
 	return release, nil
+}
+
+// BatchCreateRelease 批量创建发布：多个DU共享同一蓝图和ArtifactVersion，
+// 自动同步 initDb/initDbAuth/initDbFinal/ImportData 中的 URL tag。
+// 每个DU创建一个独立的发布单。
+func (r *ReleaseService) BatchCreateRelease(title string, duCodes []string, createdByID, blueprintID uint, newVersion string) ([]*model.Release, error) {
+	if len(duCodes) == 0 {
+		return nil, fmt.Errorf("no deploy units selected")
+	}
+	if newVersion == "" {
+		return nil, fmt.Errorf("ArtifactVersion is required")
+	}
+
+	initDbFields := []string{"initDb", "initDbAuth", "initDbFinal", "ImportData"}
+
+	var releases []*model.Release
+	for _, duCode := range duCodes {
+		// 获取该DU在所有环境的快照
+		snapshots, err := r.dmdb.CompareDUConfig(duCode)
+		if err != nil {
+			return nil, fmt.Errorf("compare du %s: %w", duCode, err)
+		}
+
+		// 构建 changes: ArtifactVersion + 自动同步的 initDb 字段
+		changes := map[string]interface{}{
+			"ArtifactVersion": newVersion,
+		}
+
+		// 对每个 initDb 字段，收集各环境的自动更新结果
+		for _, field := range initDbFields {
+			envUpdated := make(map[string]interface{})
+			for _, snap := range snapshots {
+				current, ok := snap.Fields[field]
+				if !ok || current == "" {
+					continue
+				}
+				updated := autoUpdateInitDbTag(current, newVersion)
+				if updated != "" {
+					var parsed interface{}
+					if err := json.Unmarshal([]byte(updated), &parsed); err == nil {
+						envUpdated[snap.Env] = parsed
+					} else {
+						envUpdated[snap.Env] = updated
+					}
+				}
+			}
+			if len(envUpdated) == 0 {
+				continue
+			}
+			// 检查所有环境值是否相同
+			first := ""
+			allSame := true
+			var firstVal interface{}
+			for env, v := range envUpdated {
+				b, _ := json.Marshal(v)
+				s := string(b)
+				if first == "" {
+					first = s
+					firstVal = v
+				} else if s != first {
+					allSame = false
+					break
+				}
+				_ = env
+			}
+			if allSame {
+				changes[field] = firstVal
+			} else {
+				// 使用 _default + 环境覆盖格式
+				obj := map[string]interface{}{"_default": firstVal}
+				for env, v := range envUpdated {
+					b, _ := json.Marshal(v)
+					if string(b) != first {
+						obj[env] = v
+					}
+				}
+				changes[field] = obj
+			}
+		}
+
+		release, err := r.CreateRelease(title, duCode, createdByID, blueprintID, changes)
+		if err != nil {
+			return nil, fmt.Errorf("create release for %s: %w", duCode, err)
+		}
+		releases = append(releases, release)
+	}
+	return releases, nil
+}
+
+// autoUpdateInitDbTag 替换 initDb JSON 中 source URL 的 tag 部分
+func autoUpdateInitDbTag(currentVal string, newVersion string) string {
+	var arr []interface{}
+	if err := json.Unmarshal([]byte(currentVal), &arr); err != nil {
+		return ""
+	}
+	if len(arr) == 0 {
+		return ""
+	}
+	changed := false
+	for i, item := range arr {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		source, _ := m["source"].(string)
+		if source == "" {
+			continue
+		}
+		idx := strings.Index(source, "/blob/")
+		if idx < 0 {
+			continue
+		}
+		after := source[idx+6:]
+		slashIdx := strings.Index(after, "/")
+		if slashIdx < 0 {
+			continue
+		}
+		oldTag := after[:slashIdx]
+		if oldTag == newVersion {
+			continue
+		}
+		newSource := source[:idx+6] + newVersion + after[slashIdx:]
+		m["source"] = newSource
+		arr[i] = m
+		changed = true
+	}
+	if !changed {
+		return ""
+	}
+	b, err := json.Marshal(arr)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 func (r *ReleaseService) StartRelease(releaseID, userID uint) (*model.Release, error) {

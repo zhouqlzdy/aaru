@@ -73,6 +73,7 @@ func RegisterRoutes(
 
 		// 发布单
 		api.POST("/releases", releaseHandler.CreateRelease)
+		api.POST("/batch-releases", releaseHandler.BatchCreateRelease)
 		api.GET("/releases", releaseHandler.ListReleases)
 		api.GET("/releases/:id", releaseHandler.GetRelease)
 		api.POST("/releases/:id/start", releaseHandler.StartRelease)
