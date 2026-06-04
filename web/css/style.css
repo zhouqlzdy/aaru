@@ -34,6 +34,8 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Ro
 .user-name{font-size:13px;font-weight:600;color:#f4f4f5}
 .user-role{font-size:11px;color:#71717a}
 .btn-logout{background:0;border:0;color:#71717a;cursor:pointer;padding:4px}
+.sidebar-credits{padding:6px 12px 4px;font-size:10px;color:#52525b;line-height:1.6;text-align:center}
+.sidebar-credits div:first-child{color:#71717a}
 .main-content{flex:1;display:flex;flex-direction:column;overflow:hidden}
 .content-header{height:60px;background:var(--card);border-bottom:1px solid var(--border);padding:0 24px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
 .page-title{font-size:18px;font-weight:700}

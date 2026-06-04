@@ -122,6 +122,18 @@ func (d *DMDBClient) GetDeployUnitByCode(env, code string) (*model.DeployUnitInf
 	return &du, nil
 }
 
+// getRawDU 获取单个DU的完整原始JSON数据
+func (d *DMDBClient) getRawDU(env, code string) (map[string]interface{}, error) {
+	var raw map[string]interface{}
+	if err := d.get("/api/get-du/"+env+"/"+code, &raw); err != nil {
+		return nil, err
+	}
+	if raw["biz_serial"] == nil || raw["biz_serial"] == "" {
+		return nil, fmt.Errorf("deploy unit %s/%s not found", env, code)
+	}
+	return raw, nil
+}
+
 // GetEnvDetail 获取环境详情
 func (d *DMDBClient) GetEnvDetail(code string) (*model.EnvInfo, error) {
 	var env model.EnvInfo
@@ -166,18 +178,6 @@ func (d *DMDBClient) ListAllDUs(silo, system string) ([]model.DevOpsDUItem, erro
 	return resp.Data, nil
 }
 
-// getRawDU 获取单个DU的完整原始JSON数据
-func (d *DMDBClient) getRawDU(env, code string) (map[string]interface{}, error) {
-	var raw map[string]interface{}
-	if err := d.get("/api/get-du/"+env+"/"+code, &raw); err != nil {
-		return nil, err
-	}
-	if raw["biz_serial"] == nil || raw["biz_serial"] == "" {
-		return nil, fmt.Errorf("deploy unit %s/%s not found", env, code)
-	}
-	return raw, nil
-}
-
 // flattenFields 将map[string]interface{}扁平化为map[string]string，嵌套值序列化为JSON
 func flattenFields(raw map[string]interface{}) map[string]string {
 	fields := make(map[string]string)
@@ -208,8 +208,22 @@ func flattenFields(raw map[string]interface{}) map[string]string {
 	return fields
 }
 
-// CompareDUConfig 获取某个DU在所有DMDB环境中的完整配置，用于跨环境对比
+// CompareDUConfig 获取某个DU在所有DMDB环境中的完整配置，用于跨环境对比展示。
+// 会折叠仅tag不同的initDb字段，并展开对象数组为子行。
 func (d *DMDBClient) CompareDUConfig(duCode string) ([]model.DUConfigSnapshot, error) {
+	snapshots, err := d.CompareDUConfigRaw(duCode)
+	if err != nil {
+		return nil, err
+	}
+	// 后处理：InitDb/InitDbAuth/InitDbFinal 如果仅tag不同则简化展示
+	collapseInitTagOnly(snapshots)
+	// 展开剩余的对象数组JSON字段为独立子行
+	expandObjectArrayFields(snapshots, 10)
+	return snapshots, nil
+}
+
+// CompareDUConfigRaw 获取原始快照，不做折叠/展开（供 BatchCreateRelease 等需要原始数据的场景使用）
+func (d *DMDBClient) CompareDUConfigRaw(duCode string) ([]model.DUConfigSnapshot, error) {
 	envs, err := d.ListEnvironments()
 	if err != nil {
 		return nil, fmt.Errorf("list environments: %w", err)
@@ -225,7 +239,7 @@ func (d *DMDBClient) CompareDUConfig(duCode string) ([]model.DUConfigSnapshot, e
 			defer wg.Done()
 			raw, err := d.getRawDU(envCode, duCode)
 			if err != nil {
-				log.Printf("CompareDUConfig: getRawDU(%s, %s): %v", envCode, duCode, err)
+				log.Printf("CompareDUConfigRaw: getRawDU(%s, %s): %v", envCode, duCode, err)
 				return
 			}
 			fields := flattenFields(raw)
@@ -239,12 +253,6 @@ func (d *DMDBClient) CompareDUConfig(duCode string) ([]model.DUConfigSnapshot, e
 		}(env.Env, env.Name)
 	}
 	wg.Wait()
-
-	// 后处理：InitDb/InitDbAuth/InitDbFinal 如果仅tag不同则简化展示
-	collapseInitTagOnly(snapshots)
-
-	// 展开剩余的对象数组JSON字段为独立子行
-	expandObjectArrayFields(snapshots, 10)
 
 	return snapshots, nil
 }

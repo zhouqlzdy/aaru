@@ -23,15 +23,6 @@ type CreateReleaseRequest struct {
 	Changes        map[string]interface{} `json:"changes"`
 }
 
-func parseID(c *gin.Context, param string) (uint, bool) {
-	id, err := strconv.ParseUint(c.Param(param), 10, 64)
-	if err != nil || id == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid " + param})
-		return 0, false
-	}
-	return uint(id), true
-}
-
 func (h *ReleaseHandler) CreateRelease(c *gin.Context) {
 	var req CreateReleaseRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

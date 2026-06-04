@@ -2,6 +2,7 @@ package model
 
 import (
 	"encoding/json"
+	"log"
 	"time"
 
 	"gorm.io/gorm"
@@ -92,7 +93,9 @@ type Release struct {
 // AfterFind GORM hook — 从 ChangesJSON 解析出 Changes
 func (r *Release) AfterFind(tx *gorm.DB) error {
 	if r.ChangesJSON != "" {
-		json.Unmarshal([]byte(r.ChangesJSON), &r.Changes)
+		if err := json.Unmarshal([]byte(r.ChangesJSON), &r.Changes); err != nil {
+			log.Printf("release %d: unmarshal ChangesJSON: %v", r.ID, err)
+		}
 	}
 	return nil
 }
@@ -100,7 +103,10 @@ func (r *Release) AfterFind(tx *gorm.DB) error {
 // BeforeCreate GORM hook — 从 Changes 序列化到 ChangesJSON
 func (r *Release) BeforeCreate(tx *gorm.DB) error {
 	if r.Changes != nil {
-		b, _ := json.Marshal(r.Changes)
+		b, err := json.Marshal(r.Changes)
+		if err != nil {
+			return err
+		}
 		r.ChangesJSON = string(b)
 	}
 	return nil

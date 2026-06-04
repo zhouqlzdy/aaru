@@ -50,12 +50,8 @@ func (h *AdminHandler) InitSystem(c *gin.Context) {
 	}
 
 	// 分配 admin 角色
-	roles, _ := h.store.ListRoles()
-	for _, role := range roles {
-		if role.Name == "admin" {
-			h.store.SetUserRoles(user.ID, []uint{role.ID})
-			break
-		}
+	if adminRole, err := h.store.GetRoleByName("admin"); err == nil {
+		h.store.SetUserRoles(user.ID, []uint{adminRole.ID})
 	}
 
 	// 生成 token
@@ -73,30 +69,9 @@ func (h *AdminHandler) InitSystem(c *gin.Context) {
 	})
 }
 
-// requireAdmin 检查当前用户是否为 admin
-func (h *AdminHandler) requireAdmin(c *gin.Context) bool {
-	userID, ok := c.Get("user_id")
-	if !ok {
-		c.JSON(http.StatusForbidden, gin.H{"error": "admin access required"})
-		return false
-	}
-	user, err := h.store.GetUserWithRoles(userID.(uint))
-	if err != nil {
-		c.JSON(http.StatusForbidden, gin.H{"error": "admin access required"})
-		return false
-	}
-	for _, role := range user.Roles {
-		if role.Name == "admin" {
-			return true
-		}
-	}
-	c.JSON(http.StatusForbidden, gin.H{"error": "admin access required"})
-	return false
-}
-
 // ListUsers 用户列表
 func (h *AdminHandler) ListUsers(c *gin.Context) {
-	if !h.requireAdmin(c) {
+	if !requireAdmin(c, h.store) {
 		return
 	}
 	users, err := h.store.ListUsers()
@@ -109,7 +84,7 @@ func (h *AdminHandler) ListUsers(c *gin.Context) {
 
 // BatchCreateUsers 批量预创建用户（SSO登录时自动关联）
 func (h *AdminHandler) BatchCreateUsers(c *gin.Context) {
-	if !h.requireAdmin(c) {
+	if !requireAdmin(c, h.store) {
 		return
 	}
 	var req struct {
@@ -169,7 +144,7 @@ func (h *AdminHandler) BatchCreateUsers(c *gin.Context) {
 
 // ListRoles 角色列表
 func (h *AdminHandler) ListRoles(c *gin.Context) {
-	if !h.requireAdmin(c) {
+	if !requireAdmin(c, h.store) {
 		return
 	}
 	roles, err := h.store.ListRoles()
@@ -182,7 +157,7 @@ func (h *AdminHandler) ListRoles(c *gin.Context) {
 
 // CreateRole 创建角色
 func (h *AdminHandler) CreateRole(c *gin.Context) {
-	if !h.requireAdmin(c) {
+	if !requireAdmin(c, h.store) {
 		return
 	}
 	var req struct {
@@ -206,7 +181,7 @@ func (h *AdminHandler) CreateRole(c *gin.Context) {
 
 // SetUserRoles 设置用户角色
 func (h *AdminHandler) SetUserRoles(c *gin.Context) {
-	if !h.requireAdmin(c) {
+	if !requireAdmin(c, h.store) {
 		return
 	}
 	userID, err := strconv.ParseUint(c.Param("userId"), 10, 64)
@@ -230,7 +205,7 @@ func (h *AdminHandler) SetUserRoles(c *gin.Context) {
 
 // UpdateUserAccess 更新用户的可用竖井和环境
 func (h *AdminHandler) UpdateUserAccess(c *gin.Context) {
-	if !h.requireAdmin(c) {
+	if !requireAdmin(c, h.store) {
 		return
 	}
 	userID, err := strconv.ParseUint(c.Param("userId"), 10, 64)
@@ -255,7 +230,7 @@ func (h *AdminHandler) UpdateUserAccess(c *gin.Context) {
 
 // SetRolePermissions 设置角色权限
 func (h *AdminHandler) SetRolePermissions(c *gin.Context) {
-	if !h.requireAdmin(c) {
+	if !requireAdmin(c, h.store) {
 		return
 	}
 	roleID, err := strconv.ParseUint(c.Param("roleId"), 10, 64)
@@ -279,7 +254,7 @@ func (h *AdminHandler) SetRolePermissions(c *gin.Context) {
 
 // GetRole 获取角色详情
 func (h *AdminHandler) GetRole(c *gin.Context) {
-	if !h.requireAdmin(c) {
+	if !requireAdmin(c, h.store) {
 		return
 	}
 	roleID, err := strconv.ParseUint(c.Param("roleId"), 10, 64)

@@ -46,7 +46,7 @@ func (s *DBStore) DB() *gorm.DB { return s.db }
 func (s *DBStore) CreateUser(u *model.User) error { return s.db.Create(u).Error }
 func (s *DBStore) GetUserByUsername(name string) (*model.User, error) {
 	var u model.User
-	err := s.db.Where("username = ?", name).Preload("Roles").First(&u).Error
+	err := s.db.Where("username = ?", name).Preload("Roles.Permissions").First(&u).Error
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +54,7 @@ func (s *DBStore) GetUserByUsername(name string) (*model.User, error) {
 }
 func (s *DBStore) GetUserWithRoles(id uint) (*model.User, error) {
 	var u model.User
-	err := s.db.Preload("Roles").First(&u, id).Error
+	err := s.db.Preload("Roles.Permissions").First(&u, id).Error
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +62,7 @@ func (s *DBStore) GetUserWithRoles(id uint) (*model.User, error) {
 }
 func (s *DBStore) ListUsers() ([]model.User, error) {
 	var users []model.User
-	err := s.db.Preload("Roles").Find(&users).Error
+	err := s.db.Preload("Roles.Permissions").Find(&users).Error
 	return users, err
 }
 func (s *DBStore) SetUserRoles(userID uint, roleIDs []uint) error {
@@ -112,6 +112,14 @@ func (s *DBStore) ListRoles() ([]model.Role, error) {
 func (s *DBStore) GetRole(id uint) (*model.Role, error) {
 	var r model.Role
 	err := s.db.Preload("Permissions").First(&r, id).Error
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+func (s *DBStore) GetRoleByName(name string) (*model.Role, error) {
+	var r model.Role
+	err := s.db.Where("name = ?", name).Preload("Permissions").First(&r).Error
 	if err != nil {
 		return nil, err
 	}

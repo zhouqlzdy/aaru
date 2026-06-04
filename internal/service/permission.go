@@ -22,11 +22,7 @@ func (p *PermissionService) Can(userID uint, deployUnitCode string, action strin
 		return false
 	}
 	for _, role := range user.Roles {
-		var permissions []model.Permission
-		if err := p.store.DB().Model(&role).Association("Permissions").Find(&permissions); err != nil {
-			continue
-		}
-		for _, perm := range permissions {
+		for _, perm := range role.Permissions {
 			if perm.Action == action && (perm.DeployUnitCode == "" || perm.DeployUnitCode == "*" || perm.DeployUnitCode == deployUnitCode) {
 				return true
 			}
@@ -42,11 +38,7 @@ func (p *PermissionService) CanAction(userID uint, action string) bool {
 		return false
 	}
 	for _, role := range user.Roles {
-		var permissions []model.Permission
-		if err := p.store.DB().Model(&role).Association("Permissions").Find(&permissions); err != nil {
-			continue
-		}
-		for _, perm := range permissions {
+		for _, perm := range role.Permissions {
 			if perm.Action == action {
 				return true
 			}
@@ -63,11 +55,7 @@ func (p *PermissionService) GetUserPermittedDUs(userID uint) (map[string]bool, e
 	}
 	result := make(map[string]bool)
 	for _, role := range user.Roles {
-		var permissions []model.Permission
-		if err := p.store.DB().Model(&role).Association("Permissions").Find(&permissions); err != nil {
-			continue
-		}
-		for _, perm := range permissions {
+		for _, perm := range role.Permissions {
 			if perm.DeployUnitCode == "*" || perm.DeployUnitCode == "" {
 				result["*"] = true
 			} else {

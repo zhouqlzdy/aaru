@@ -22,25 +22,20 @@ func NewReleaseService(s *store.DBStore, d *DMDBClient, p *PermissionService, bp
 	return &ReleaseService{store: s, dmdb: d, permSvc: p, bpService: bp}
 }
 
+// reloadRelease 重新加载 release（含 stages），用于操作后刷新数据。
+func (r *ReleaseService) reloadRelease(release *model.Release) {
+	if reloaded, err := r.store.GetReleaseWithStages(release.ID); err == nil {
+		*release = *reloaded
+	}
+}
+
 func (r *ReleaseService) CreateRelease(title, duCode string, createdByID uint, blueprintID uint, changes map[string]interface{}) (*model.Release, error) {
 	allEnvs, err := r.dmdb.ListEnvironments()
 	if err != nil {
 		return nil, fmt.Errorf("list environments: %w", err)
 	}
 
-	// 查找 DU 所属 silo 用于权限校验
-	var siloCode string
-	for _, env := range allEnvs {
-		du, err := r.dmdb.GetDeployUnitByCode(env.Env, duCode)
-		if err == nil && du != nil && du.BizSerial != "" {
-			siloCode = du.SiloCode
-			break
-		}
-	}
-	if !r.permSvc.CanDeploy(createdByID, siloCode) {
-		return nil, fmt.Errorf("permission denied: no deploy access to silo %s", siloCode)
-	}
-
+	// 查找 DU 信息（同时获取 siloCode 用于权限校验）
 	var duInfo *model.DeployUnitInfo
 	for _, env := range allEnvs {
 		du, err := r.dmdb.GetDeployUnitByCode(env.Env, duCode)
@@ -51,6 +46,9 @@ func (r *ReleaseService) CreateRelease(title, duCode string, createdByID uint, b
 	}
 	if duInfo == nil {
 		return nil, fmt.Errorf("deploy unit %s not found", duCode)
+	}
+	if !r.permSvc.CanDeploy(createdByID, duInfo.SiloCode) {
+		return nil, fmt.Errorf("permission denied: no deploy access to silo %s", duInfo.SiloCode)
 	}
 
 	var siloName string
@@ -122,10 +120,11 @@ func (r *ReleaseService) CreateRelease(title, duCode string, createdByID uint, b
 		}
 	}
 
-	if err := r.store.DB().Preload("Stages").First(release, release.ID).Error; err != nil {
+	reloaded, err := r.store.GetReleaseWithStages(release.ID)
+	if err != nil {
 		return nil, fmt.Errorf("reload release: %w", err)
 	}
-	return release, nil
+	return reloaded, nil
 }
 
 // BatchCreateRelease 批量创建发布：多个DU共享同一蓝图和ArtifactVersion，
@@ -143,8 +142,8 @@ func (r *ReleaseService) BatchCreateRelease(title string, duCodes []string, crea
 
 	var releases []*model.Release
 	for _, duCode := range duCodes {
-		// 获取该DU在所有环境的快照
-		snapshots, err := r.dmdb.CompareDUConfig(duCode)
+		// 获取该DU在所有环境的原始快照（不做折叠，保留initDb原始值用于tag更新）
+		snapshots, err := r.dmdb.CompareDUConfigRaw(duCode)
 		if err != nil {
 			return nil, fmt.Errorf("compare du %s: %w", duCode, err)
 		}
@@ -301,7 +300,7 @@ func (r *ReleaseService) StartRelease(releaseID, userID uint) (*model.Release, e
 		}
 	}
 
-	r.store.DB().Preload("Stages").First(release, release.ID)
+	r.reloadRelease(release)
 	return release, nil
 }
 
@@ -503,7 +502,7 @@ func (r *ReleaseService) ApproveStage(stageID, userID uint, comment string) (*mo
 	// 推送变更到 DMDB
 	if err := r.applyChanges(release, &stage); err != nil {
 		// 推送失败，stage 停留在 pushing，返回错误
-		r.store.DB().Preload("Stages").First(release, release.ID)
+		r.reloadRelease(release)
 		return release, fmt.Errorf("config push failed: %w (stage stuck in pushing, use retry)", err)
 	}
 
@@ -511,7 +510,7 @@ func (r *ReleaseService) ApproveStage(stageID, userID uint, comment string) (*mo
 	r.activateChildren(release.ID, *stage.NodeID)
 	r.checkReleaseCompleted(release)
 
-	r.store.DB().Preload("Stages").First(release, release.ID)
+	r.reloadRelease(release)
 	return release, nil
 }
 
@@ -543,7 +542,7 @@ func (r *ReleaseService) RejectStage(stageID, userID uint, comment string) (*mod
 	if err := r.store.DB().Save(release).Error; err != nil {
 		return nil, fmt.Errorf("save release: %w", err)
 	}
-	r.store.DB().Preload("Stages").First(release, release.ID)
+	r.reloadRelease(release)
 	return release, nil
 }
 
@@ -618,7 +617,7 @@ func (r *ReleaseService) PromoteToNext(stageID, userID uint) (*model.Release, er
 	}
 	r.autoProgress(release.ID, stage.ID)
 
-	r.store.DB().Preload("Stages").First(release, release.ID)
+	r.reloadRelease(release)
 	return release, nil
 }
 
@@ -639,19 +638,16 @@ func (r *ReleaseService) RetryPush(stageID, userID uint) (*model.Release, error)
 	if !r.permSvc.CanDeploy(userID, release.SiloCode) {
 		return nil, fmt.Errorf("permission denied")
 	}
-	if err != nil {
-		return nil, err
-	}
 
 	if err := r.applyChanges(release, &stage); err != nil {
-		r.store.DB().Preload("Stages").First(release, release.ID)
+		r.reloadRelease(release)
 		return release, fmt.Errorf("retry push failed: %w", err)
 	}
 
 	r.activateChildren(release.ID, *stage.NodeID)
 	r.checkReleaseCompleted(release)
 
-	r.store.DB().Preload("Stages").First(release, release.ID)
+	r.reloadRelease(release)
 	return release, nil
 }
 
@@ -660,21 +656,20 @@ func (r *ReleaseService) ListReleases(page, pageSize int, userID uint) ([]model.
 	user, err := r.store.GetUserWithRoles(userID)
 	filterUserID := uint(0)
 	if err == nil {
-		isDeveloper := false
-		isAdmin := false
-		for _, role := range user.Roles {
-			if role.Name == "developer" {
-				isDeveloper = true
-			}
-			if role.Name == "admin" {
-				isAdmin = true
-			}
-		}
-		if isDeveloper && !isAdmin {
+		if hasRole(user, "developer") && !hasRole(user, "admin") {
 			filterUserID = userID
 		}
 	}
 	return r.store.ListReleases(page, pageSize, filterUserID)
+}
+
+func hasRole(user *model.User, roleName string) bool {
+	for _, role := range user.Roles {
+		if role.Name == roleName {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *ReleaseService) GetRelease(id uint) (*model.Release, error) {
@@ -693,22 +688,14 @@ func (r *ReleaseService) GetPendingApprovals(userID uint) ([]model.ReleaseStage,
 
 	// admin 看所有
 	user, _ := r.store.GetUserWithRoles(userID)
-	if user != nil {
-		for _, role := range user.Roles {
-			if role.Name == "admin" {
-				return allStages, nil
-			}
-		}
+	if user != nil && hasRole(user, "admin") {
+		return allStages, nil
 	}
 
-	// 按用户 silo + env 过滤
+	// 按用户 silo + env 过滤（Release 已由 GetStagesByStatus 预加载）
 	var filtered []model.ReleaseStage
 	for _, stage := range allStages {
-		release, err := r.store.GetReleaseWithStages(stage.ReleaseID)
-		if err != nil {
-			continue
-		}
-		if r.permSvc.CanApprove(userID, release.SiloCode, stage.EnvCode) {
+		if stage.Release != nil && r.permSvc.CanApprove(userID, stage.Release.SiloCode, stage.EnvCode) {
 			filtered = append(filtered, stage)
 		}
 	}
@@ -770,6 +757,6 @@ func (r *ReleaseService) WebhookPromote(stageID uint, token string) (*model.Rele
 	}
 	r.autoProgress(release.ID, stage.ID)
 
-	r.store.DB().Preload("Stages").First(release, release.ID)
+	r.reloadRelease(release)
 	return release, nil
 }

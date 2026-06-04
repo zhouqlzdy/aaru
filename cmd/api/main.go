@@ -70,14 +70,7 @@ func initDefaults(dbStore *store.DBStore) {
 	roles, _ := dbStore.ListRoles()
 	if len(roles) > 0 {
 		// 补充创建 viewer 角色（如果不存在）
-		hasViewer := false
-		for _, r := range roles {
-			if r.Name == "viewer" {
-				hasViewer = true
-				break
-			}
-		}
-		if !hasViewer {
+		if _, err := dbStore.GetRoleByName("viewer"); err != nil {
 			viewerRole := &model.Role{Name: "viewer", Description: "观察者，仅查看"}
 			dbStore.CreateRole(viewerRole)
 			dbStore.SetRolePermissions(viewerRole.ID, []model.Permission{

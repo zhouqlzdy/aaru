@@ -74,12 +74,8 @@ func (h *AuthHandler) MockCallback(c *gin.Context) {
 			return
 		}
 		// 新用户默认分配 viewer 角色
-		roles, _ := h.store.ListRoles()
-		for _, role := range roles {
-			if role.Name == "viewer" {
-				h.store.SetUserRoles(user.ID, []uint{role.ID})
-				break
-			}
+		if viewerRole, err := h.store.GetRoleByName("viewer"); err == nil {
+			h.store.SetUserRoles(user.ID, []uint{viewerRole.ID})
 		}
 	}
 
@@ -168,12 +164,8 @@ func (h *AuthHandler) GitlabCallback(c *gin.Context) {
 			return
 		}
 		// 新用户默认分配 viewer 角色
-		roles, _ := h.store.ListRoles()
-		for _, role := range roles {
-			if role.Name == "viewer" {
-				h.store.SetUserRoles(user.ID, []uint{role.ID})
-				break
-			}
+		if viewerRole, err := h.store.GetRoleByName("viewer"); err == nil {
+			h.store.SetUserRoles(user.ID, []uint{viewerRole.ID})
 		}
 	}
 

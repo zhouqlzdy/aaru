@@ -37,28 +37,8 @@ func (b *BlueprintService) Create(in *BlueprintInput) (*model.PromotionBlueprint
 	if err := b.store.CreateBlueprint(bp); err != nil {
 		return nil, err
 	}
-
-	// 逐个创建节点，GORM 会回填自增 ID
-	oldToNew := make(map[uint]uint, len(in.Nodes))
-	for i := range in.Nodes {
-		oldID := in.Nodes[i].ID
-		in.Nodes[i].ID = 0
-		in.Nodes[i].BlueprintID = bp.ID
-		if err := b.store.CreateNode(&in.Nodes[i]); err != nil {
-			return nil, fmt.Errorf("create node: %w", err)
-		}
-		oldToNew[oldID] = in.Nodes[i].ID
-	}
-
-	// 映射边的节点引用
-	for i := range in.Edges {
-		in.Edges[i].BlueprintID = bp.ID
-		in.Edges[i].FromNodeID = oldToNew[in.Edges[i].FromNodeID]
-		in.Edges[i].ToNodeID = oldToNew[in.Edges[i].ToNodeID]
-	}
-
-	if err := b.store.CreateEdges(in.Edges); err != nil {
-		return nil, fmt.Errorf("create edges: %w", err)
+	if err := b.createNodesAndEdges(bp.ID, in); err != nil {
+		return nil, err
 	}
 	bp2, err := b.store.GetBlueprint(bp.ID)
 	if err != nil {
@@ -86,33 +66,37 @@ func (b *BlueprintService) Update(id uint, in *BlueprintInput) (*model.Promotion
 	if err := b.store.DeleteNodesByBlueprint(id); err != nil {
 		return nil, fmt.Errorf("delete nodes: %w", err)
 	}
-
-	// 逐个创建节点，GORM 回填自增 ID
-	oldToNew := make(map[uint]uint, len(in.Nodes))
-	for i := range in.Nodes {
-		oldID := in.Nodes[i].ID
-		in.Nodes[i].ID = 0
-		in.Nodes[i].BlueprintID = id
-		if err := b.store.CreateNode(&in.Nodes[i]); err != nil {
-			return nil, fmt.Errorf("create node: %w", err)
-		}
-		oldToNew[oldID] = in.Nodes[i].ID
+	if err := b.createNodesAndEdges(id, in); err != nil {
+		return nil, err
 	}
-
-	for i := range in.Edges {
-		in.Edges[i].BlueprintID = id
-		in.Edges[i].FromNodeID = oldToNew[in.Edges[i].FromNodeID]
-		in.Edges[i].ToNodeID = oldToNew[in.Edges[i].ToNodeID]
-	}
-	if err := b.store.CreateEdges(in.Edges); err != nil {
-		return nil, fmt.Errorf("create edges: %w", err)
-	}
-
 	bp2, err := b.store.GetBlueprint(id)
 	if err != nil {
 		return nil, fmt.Errorf("reload blueprint: %w", err)
 	}
 	return bp2, nil
+}
+
+// createNodesAndEdges 逐个创建节点并建立 oldID→newID 映射，再批量创建边。
+func (b *BlueprintService) createNodesAndEdges(bpID uint, in *BlueprintInput) error {
+	oldToNew := make(map[uint]uint, len(in.Nodes))
+	for i := range in.Nodes {
+		oldID := in.Nodes[i].ID
+		in.Nodes[i].ID = 0
+		in.Nodes[i].BlueprintID = bpID
+		if err := b.store.CreateNode(&in.Nodes[i]); err != nil {
+			return fmt.Errorf("create node: %w", err)
+		}
+		oldToNew[oldID] = in.Nodes[i].ID
+	}
+	for i := range in.Edges {
+		in.Edges[i].BlueprintID = bpID
+		in.Edges[i].FromNodeID = oldToNew[in.Edges[i].FromNodeID]
+		in.Edges[i].ToNodeID = oldToNew[in.Edges[i].ToNodeID]
+	}
+	if err := b.store.CreateEdges(in.Edges); err != nil {
+		return fmt.Errorf("create edges: %w", err)
+	}
+	return nil
 }
 
 // ensureApprovalRole 为指定环境创建/查找审批角色
@@ -200,8 +184,14 @@ func (b *BlueprintService) List() ([]map[string]interface{}, error) {
 func (b *BlueprintService) Delete(id uint) error { return b.store.DeleteBlueprint(id) }
 
 func (b *BlueprintService) GetSourceNodeIDs(bpID uint) ([]uint, error) {
-	nodes, _ := b.store.GetBlueprintNodes(bpID)
-	edges, _ := b.store.GetBlueprintEdges(bpID)
+	nodes, err := b.store.GetBlueprintNodes(bpID)
+	if err != nil {
+		return nil, err
+	}
+	edges, err := b.store.GetBlueprintEdges(bpID)
+	if err != nil {
+		return nil, err
+	}
 	hasIn := make(map[uint]bool)
 	for _, e := range edges {
 		hasIn[e.ToNodeID] = true
@@ -215,7 +205,10 @@ func (b *BlueprintService) GetSourceNodeIDs(bpID uint) ([]uint, error) {
 	return src, nil
 }
 func (b *BlueprintService) GetParentNodeIDs(bpID, nodeID uint) ([]uint, error) {
-	edges, _ := b.store.GetBlueprintEdges(bpID)
+	edges, err := b.store.GetBlueprintEdges(bpID)
+	if err != nil {
+		return nil, err
+	}
 	var p []uint
 	for _, e := range edges {
 		if e.ToNodeID == nodeID {
@@ -225,7 +218,10 @@ func (b *BlueprintService) GetParentNodeIDs(bpID, nodeID uint) ([]uint, error) {
 	return p, nil
 }
 func (b *BlueprintService) GetChildNodeIDs(bpID, nodeID uint) ([]uint, error) {
-	edges, _ := b.store.GetBlueprintEdges(bpID)
+	edges, err := b.store.GetBlueprintEdges(bpID)
+	if err != nil {
+		return nil, err
+	}
 	var c []uint
 	for _, e := range edges {
 		if e.FromNodeID == nodeID {
@@ -235,7 +231,10 @@ func (b *BlueprintService) GetChildNodeIDs(bpID, nodeID uint) ([]uint, error) {
 	return c, nil
 }
 func (b *BlueprintService) IsSinkNode(bpID, nodeID uint) (bool, error) {
-	edges, _ := b.store.GetBlueprintEdges(bpID)
+	edges, err := b.store.GetBlueprintEdges(bpID)
+	if err != nil {
+		return false, err
+	}
 	for _, e := range edges {
 		if e.FromNodeID == nodeID {
 			return false, nil
