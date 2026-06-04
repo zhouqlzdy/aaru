@@ -2203,19 +2203,26 @@ let dagState = { nodes: [], edges: [], nextId: 100, selectedNode: null, selected
 
 async function loadPageBlueprintList(body) {
   showLoading(body);
+  const isAdmin = (currentUser?.roles||[]).some(r=>r.name==='admin');
   try {
     const data = await api('/blueprints');
     const bps = data.blueprints || [];
-    document.getElementById('header-actions').innerHTML = '<button class="btn btn-primary" onclick="loadPageBlueprintEditor()">+ 新建蓝图</button>';
+    if (isAdmin) {
+      document.getElementById('header-actions').innerHTML = '<button class="btn btn-primary" onclick="loadPageBlueprintEditor()">+ 新建蓝图</button>';
+    }
     setPage('blueprints', '晋级蓝图管理', '管理环境晋级策略（DAG）');
     if (bps.length === 0) {
-      body.innerHTML = '<div class="empty-state"><p>暂无晋级蓝图</p><button class="btn btn-primary" onclick="loadPageBlueprintEditor()">+ 新建蓝图</button></div>';
+      body.innerHTML = `<div class="empty-state"><p>暂无晋级蓝图</p>${isAdmin?'<button class="btn btn-primary" onclick="loadPageBlueprintEditor()">+ 新建蓝图</button>':''}</div>`;
       return;
     }
-    body.innerHTML = bps.map(b=>`<div class="blueprint-list-item" onclick="loadPageBlueprintEditor(${b.id})" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">
-      <div><strong>${escapeHtml(b.name)}</strong><br><span style="font-size:12px;color:var(--text-muted)">${escapeHtml(b.description||'')}</span></div>
-      <div style="font-size:12px;color:var(--text-muted);text-align:right">${b.node_count} 节点 · ${b.edge_count} 边<button class="btn btn-danger btn-xs" onclick="event.stopPropagation();deleteBlueprint(${b.id})" style="margin-left:12px">删除</button></div>
-    </div>`).join('');
+    body.innerHTML = bps.map(b=>{
+      const editAction = isAdmin ? `onclick="loadPageBlueprintEditor(${b.id})"` : '';
+      const deleteBtn = isAdmin ? `<button class="btn btn-danger btn-xs" onclick="event.stopPropagation();deleteBlueprint(${b.id})" style="margin-left:12px">删除</button>` : '';
+      return `<div class="blueprint-list-item" ${editAction} style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;${isAdmin?'cursor:pointer':''}">
+        <div><strong>${escapeHtml(b.name)}</strong><br><span style="font-size:12px;color:var(--text-muted)">${escapeHtml(b.description||'')}</span></div>
+        <div style="font-size:12px;color:var(--text-muted);text-align:right">${b.node_count} 节点 · ${b.edge_count} 边${deleteBtn}</div>
+      </div>`;
+    }).join('');
   } catch(e) { body.innerHTML = '<div class="empty-state"><p>加载失败</p></div>'; }
 }
 
@@ -2237,10 +2244,12 @@ async function loadPageBlueprintEditor(bpId) {
   let roles = [];
   try { const d = await api('/admin/roles'); roles = d.roles||[]; } catch(e) {}
 
-  setPage('blueprints', bpId ? '编辑蓝图: '+escapeHtml(bp?.name||'') : '新建蓝图', '基于DAG的环境晋级策略编辑器');
-  actions.innerHTML = `
+  const isAdmin = (currentUser?.roles||[]).some(r=>r.name==='admin');
+  setPage('blueprints', bpId ? (isAdmin?'编辑蓝图: ':'查看蓝图: ')+escapeHtml(bp?.name||'') : '新建蓝图', '基于DAG的环境晋级策略编辑器');
+  actions.innerHTML = isAdmin ? `
     <button class="btn btn-primary" onclick="saveBlueprint(${bpId||0})">保存蓝图</button>
-    <button class="btn btn-secondary" onclick="loadPageBlueprintList()">返回列表</button>`;
+    <button class="btn btn-secondary" onclick="loadPageBlueprintList()">返回列表</button>`
+    : `<button class="btn btn-secondary" onclick="loadPageBlueprintList()">返回列表</button>`;
 
   // Init DAG state
   if (bp) {
@@ -2251,12 +2260,13 @@ async function loadPageBlueprintEditor(bpId) {
     dagState = { nodes: [], edges: [], nextId: 100, selectedNode: null, selectedEdge: null };
   }
 
-  body.innerHTML = `<div style="display:grid;grid-template-columns:1fr 300px;gap:16px;height:calc(100vh - 140px)">
-    <div style="min-width:0;overflow:hidden">
-      <div style="margin-bottom:8px;display:flex;gap:8px">
+  const editTools = isAdmin ? `
         <button class="btn btn-secondary btn-sm" onclick="addDagNode()">+ 添加节点</button>
         <button class="btn btn-secondary btn-sm" onclick="autoLayout()">自动排版</button>
-        <span style="font-size:11px;color:var(--text-muted);line-height:28px;margin-left:8px">Shift+点击两节点创建边 | 双击边删除 | 拖拽节点移动</span>
+        <span style="font-size:11px;color:var(--text-muted);line-height:28px;margin-left:8px">Shift+点击两节点创建边 | 双击边删除 | 拖拽节点移动</span>` : `<span style="font-size:11px;color:var(--text-muted);line-height:28px">仅查看模式</span>`;
+  body.innerHTML = `<div style="display:grid;grid-template-columns:1fr 300px;gap:16px;height:calc(100vh - 140px)">
+    <div style="min-width:0;overflow:hidden">
+      <div style="margin-bottom:8px;display:flex;gap:8px">${editTools}
       </div>
       <div class="dag-editor" id="dag-canvas" style="flex:1;height:calc(100% - 36px)">
         <svg class="dag-svg" id="dag-svg">
@@ -2266,8 +2276,8 @@ async function loadPageBlueprintEditor(bpId) {
     </div>
     <div class="dag-panel" style="overflow-y:auto">
       <h3 style="font-size:14px;font-weight:600;margin-bottom:12px">蓝图配置</h3>
-      <div class="form-group"><label class="form-label">名称</label><input class="form-control" id="bp-name" value="${escapeHtml(bp?.name||'')}"></div>
-      <div class="form-group"><label class="form-label">描述</label><input class="form-control" id="bp-desc" value="${escapeHtml(bp?.description||'')}"></div>
+      <div class="form-group"><label class="form-label">名称</label><input class="form-control" id="bp-name" value="${escapeHtml(bp?.name||'')}" ${isAdmin?'':'disabled'}></div>
+      <div class="form-group"><label class="form-label">描述</label><input class="form-control" id="bp-desc" value="${escapeHtml(bp?.description||'')}" ${isAdmin?'':'disabled'}></div>
       <hr style="margin:12px 0">
       <div id="node-config" style="font-size:12px;color:var(--text-muted)">点击画布中的节点进行配置</div>
     </div>

@@ -18,6 +18,26 @@ func NewBlueprintHandler(bp *service.BlueprintService, s *store.DBStore) *Bluepr
 	return &BlueprintHandler{bpService: bp, store: s}
 }
 
+func (h *BlueprintHandler) requireAdmin(c *gin.Context) bool {
+	userID, ok := c.Get("user_id")
+	if !ok {
+		c.JSON(http.StatusForbidden, gin.H{"error": "admin access required"})
+		return false
+	}
+	user, err := h.store.GetUserWithRoles(userID.(uint))
+	if err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "admin access required"})
+		return false
+	}
+	for _, role := range user.Roles {
+		if role.Name == "admin" {
+			return true
+		}
+	}
+	c.JSON(http.StatusForbidden, gin.H{"error": "admin access required"})
+	return false
+}
+
 func (h *BlueprintHandler) fullResponse(bpID uint) gin.H {
 	bp, err := h.store.GetBlueprint(bpID)
 	if err != nil {
@@ -65,6 +85,9 @@ func (h *BlueprintHandler) Get(c *gin.Context) {
 }
 
 func (h *BlueprintHandler) Create(c *gin.Context) {
+	if !h.requireAdmin(c) {
+		return
+	}
 	var in service.BlueprintInput
 	if err := c.ShouldBindJSON(&in); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -79,6 +102,9 @@ func (h *BlueprintHandler) Create(c *gin.Context) {
 }
 
 func (h *BlueprintHandler) Update(c *gin.Context) {
+	if !h.requireAdmin(c) {
+		return
+	}
 	id, ok := parseID(c, "id")
 	if !ok {
 		return
@@ -97,6 +123,9 @@ func (h *BlueprintHandler) Update(c *gin.Context) {
 }
 
 func (h *BlueprintHandler) Delete(c *gin.Context) {
+	if !h.requireAdmin(c) {
+		return
+	}
 	id, ok := parseID(c, "id")
 	if !ok {
 		return
