@@ -70,8 +70,7 @@ func defaultConfig() *Config {
 			ServerAddress: "http://127.0.0.1:8733",
 		},
 		Gitlab: GitlabMock{
-			Users: []string{"alice", "bob", "charlie"},
-			URL:   "http://localhost",
+			URL: "http://localhost",
 		},
 	}
 }
