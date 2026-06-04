@@ -1721,7 +1721,7 @@ async function renderAdmin(body) {
     }
 
     body.innerHTML = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:24px">
-      <div class="card"><div class="card-header"><div class="card-title">用户管理</div></div>
+      <div class="card"><div class="card-header"><div class="card-title">用户管理</div><button class="btn btn-sm btn-primary" onclick="showBatchImportUsers()">📥 批量导入</button></div>
         <table class="data-table"><thead><tr><th>用户名</th><th>邮箱</th><th>角色</th><th>可用竖井</th><th>可用环境</th></tr></thead><tbody>${users.map(u=>`<tr>
           <td><strong>${escapeHtml(u.username)}</strong></td>
           <td>${escapeHtml(u.email||'')}</td>
@@ -1862,6 +1862,82 @@ window.saveUserRoles = async function(userId, btn) {
     modal.closest('.diff-modal-overlay').remove();
     loadPage('admin');
   } catch(e) { toast(e.message,'error'); }
+};
+
+window.showBatchImportUsers = function() {
+  const overlay = document.createElement('div');
+  overlay.className = 'diff-modal-overlay';
+  overlay.addEventListener('click', e => { if (e.target===overlay) overlay.remove(); });
+  const modal = document.createElement('div');
+  modal.className = 'diff-modal';
+  modal.style.maxWidth = '700px';
+  modal.innerHTML = `
+    <div class="diff-modal-header"><h3>📥 批量导入用户</h3><button class="diff-modal-close" onclick="this.closest('.diff-modal-overlay').remove()">✕</button></div>
+    <div class="diff-modal-body" style="padding:16px">
+      <div style="margin-bottom:12px">
+        <p style="font-size:12px;color:var(--text-muted);margin-bottom:8px">粘贴JSON 或 上传文件，格式如下：</p>
+        <pre style="background:#f4f4f5;padding:8px;border-radius:6px;font-size:11px;overflow-x:auto">[
+  {"username":"zhangsan","role":"developer","allowed_silos":"payment-silo"},
+  {"username":"lisi","role":"operator","allowed_silos":"*","allowed_envs":"staging,prod"},
+  {"username":"wangwu","role":"viewer"}
+]</pre>
+      </div>
+      <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center">
+        <input type="file" id="batch-import-file" accept=".json" style="font-size:12px" onchange="batchImportFileLoad(this)">
+        <span style="font-size:11px;color:var(--text-muted)">或直接粘贴↓</span>
+      </div>
+      <textarea id="batch-import-json" rows="12" style="width:100%;font-family:monospace;font-size:12px;border:1px solid var(--border);border-radius:6px;padding:8px" placeholder='[{"username":"...","role":"developer","allowed_silos":"..."}]'></textarea>
+      <div style="margin-top:8px;font-size:11px;color:var(--text-muted)">
+        role: admin / developer / operator / viewer &nbsp;|&nbsp; allowed_silos/envs: * 或逗号分隔 &nbsp;|&nbsp; 已存在用户自动跳过
+      </div>
+      <div id="batch-import-result" style="margin-top:12px"></div>
+      <div style="text-align:right;margin-top:16px">
+        <button class="btn btn-secondary" onclick="this.closest('.diff-modal-overlay').remove()">取消</button>
+        <button class="btn btn-primary" onclick="batchImportSubmit(this)">导入</button>
+      </div>
+    </div>`;
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+};
+
+window.batchImportFileLoad = function(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    document.getElementById('batch-import-json').value = e.target.result;
+  };
+  reader.readAsText(file);
+};
+
+window.batchImportSubmit = async function(btn) {
+  const ta = document.getElementById('batch-import-json');
+  const resultEl = document.getElementById('batch-import-result');
+  let users;
+  try {
+    users = JSON.parse(ta.value);
+    if (!Array.isArray(users)) throw new Error('JSON 必须是数组');
+  } catch(e) {
+    resultEl.innerHTML = `<div style="color:#ef4444;font-size:12px">JSON 解析失败: ${escapeHtml(e.message)}</div>`;
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = '导入中...';
+  try {
+    const data = await api('/admin/users/batch', { method:'POST', body:JSON.stringify({users}) });
+    const created = data.created||[];
+    const skipped = data.skipped||[];
+    let html = '';
+    if (created.length) html += `<div style="color:#16a34a;font-size:12px">✅ 已创建: ${created.join(', ')}</div>`;
+    if (skipped.length) html += `<div style="color:#f59e0b;font-size:12px">⏭️ 已跳过(已存在): ${skipped.join(', ')}</div>`;
+    if (!created.length && !skipped.length) html += '<div style="color:var(--text-muted);font-size:12px">无有效数据</div>';
+    resultEl.innerHTML = html;
+    if (created.length) loadPage('admin');
+  } catch(e) {
+    resultEl.innerHTML = `<div style="color:#ef4444;font-size:12px">❌ ${escapeHtml(e.message)}</div>`;
+  }
+  btn.disabled = false;
+  btn.textContent = '导入';
 };
 
 function showCreateRole() {

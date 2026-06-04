@@ -29,7 +29,7 @@ func RegisterRoutes(
 	authHandler := NewAuthHandler(authService, store, mockUsers)
 	dmdbHandler := NewDMDBHandler(dmdbClient)
 	releaseHandler := NewReleaseHandler(releaseService)
-	adminHandler := NewAdminHandler(store)
+	adminHandler := NewAdminHandler(store, authService)
 	bpHandler := NewBlueprintHandler(bpService, store)
 
 	r.SetFuncMap(map[string]interface{}{
@@ -48,6 +48,7 @@ func RegisterRoutes(
 		c.Next()
 	})
 
+	r.POST("/api/init", adminHandler.InitSystem) // 公开接口，仅无用户时可用
 	r.GET("/auth/login", authHandler.MockLogin)
 	r.POST("/auth/login", authHandler.MockCallback)
 	r.GET("/auth/callback", authHandler.MockCallback)
@@ -97,6 +98,7 @@ func RegisterRoutes(
 		api.DELETE("/blueprints/:id", bpHandler.Delete)
 
 		// 管理员
+		api.POST("/admin/users/batch", adminHandler.BatchCreateUsers)
 		api.GET("/admin/users", adminHandler.ListUsers)
 		api.GET("/admin/roles", adminHandler.ListRoles)
 		api.GET("/admin/roles/:roleId", adminHandler.GetRole)
