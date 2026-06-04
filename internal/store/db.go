@@ -134,12 +134,16 @@ func (s *DBStore) SetRolePermissions(roleID uint, perms []model.Permission) erro
 
 // ========== Release ==========
 func (s *DBStore) CreateRelease(r *model.Release) error { return s.db.Create(r).Error }
-func (s *DBStore) ListReleases(page, pageSize int) ([]model.Release, int64, error) {
+func (s *DBStore) ListReleases(page, pageSize int, createdByID uint) ([]model.Release, int64, error) {
 	var list []model.Release
 	var total int64
-	s.db.Model(&model.Release{}).Count(&total)
+	query := s.db.Model(&model.Release{})
+	if createdByID > 0 {
+		query = query.Where("created_by_id = ?", createdByID)
+	}
+	query.Count(&total)
 	offset := (page - 1) * pageSize
-	err := s.db.Preload("Stages.ApprovedBy").Preload("CreatedBy").Preload("Blueprint").Order("created_at DESC").Offset(offset).Limit(pageSize).Find(&list).Error
+	err := query.Preload("Stages.ApprovedBy").Preload("CreatedBy").Preload("Blueprint").Order("created_at DESC").Offset(offset).Limit(pageSize).Find(&list).Error
 	return list, total, err
 }
 func (s *DBStore) GetReleaseWithStages(id uint) (*model.Release, error) {

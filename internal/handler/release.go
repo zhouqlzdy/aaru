@@ -92,7 +92,8 @@ func (h *ReleaseHandler) ListReleases(c *gin.Context) {
 	if pageSize < 1 || pageSize > 100 {
 		pageSize = 20
 	}
-	releases, total, err := h.releaseService.ListReleases(page, pageSize)
+	userID := c.GetUint("user_id")
+	releases, total, err := h.releaseService.ListReleases(page, pageSize, userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

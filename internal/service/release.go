@@ -655,8 +655,26 @@ func (r *ReleaseService) RetryPush(stageID, userID uint) (*model.Release, error)
 	return release, nil
 }
 
-func (r *ReleaseService) ListReleases(page, pageSize int) ([]model.Release, int64, error) {
-	return r.store.ListReleases(page, pageSize)
+func (r *ReleaseService) ListReleases(page, pageSize int, userID uint) ([]model.Release, int64, error) {
+	// developer 角色只能看到自己创建的发布
+	user, err := r.store.GetUserWithRoles(userID)
+	filterUserID := uint(0)
+	if err == nil {
+		isDeveloper := false
+		isAdmin := false
+		for _, role := range user.Roles {
+			if role.Name == "developer" {
+				isDeveloper = true
+			}
+			if role.Name == "admin" {
+				isAdmin = true
+			}
+		}
+		if isDeveloper && !isAdmin {
+			filterUserID = userID
+		}
+	}
+	return r.store.ListReleases(page, pageSize, filterUserID)
 }
 
 func (r *ReleaseService) GetRelease(id uint) (*model.Release, error) {
