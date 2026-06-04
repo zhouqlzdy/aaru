@@ -1,8 +1,8 @@
 package service
 
 import (
-	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"aaru/internal/model"
@@ -51,6 +51,9 @@ type GitlabUser struct {
 func (a *AuthService) ExchangeCode(code string) (*GitlabUser, error) {
 	client := resty.New()
 
+	log.Printf("[GitLab SSO] exchanging code, gitlabURL=%s, clientID=%s, callbackURL=%s",
+		a.gitlabURL, a.gitlabAppID, a.callbackURL)
+
 	// 1. 用 code 换 token
 	var tokenResp struct {
 		AccessToken string `json:"access_token"`
@@ -68,13 +71,15 @@ func (a *AuthService) ExchangeCode(code string) (*GitlabUser, error) {
 		SetResult(&tokenResp).
 		Post(a.gitlabURL + "/oauth/token")
 	if err != nil {
+		log.Printf("[GitLab SSO] exchange code request error: %v", err)
 		return nil, fmt.Errorf("exchange code: %w", err)
 	}
+	log.Printf("[GitLab SSO] token response: status=%d, body=%s", resp.StatusCode(), resp.String())
 	if resp.IsError() {
-		return nil, fmt.Errorf("exchange code: status %d", resp.StatusCode())
+		return nil, fmt.Errorf("exchange code: status %d, body: %s", resp.StatusCode(), resp.String())
 	}
 	if tokenResp.AccessToken == "" {
-		return nil, fmt.Errorf("no access token in response")
+		return nil, fmt.Errorf("no access token in response: %s", resp.String())
 	}
 
 	// 2. 用 token 获取用户信息
@@ -84,17 +89,17 @@ func (a *AuthService) ExchangeCode(code string) (*GitlabUser, error) {
 		SetResult(&gitlabUser).
 		Get(a.gitlabURL + "/api/v4/user")
 	if err != nil {
+		log.Printf("[GitLab SSO] get user info error: %v", err)
 		return nil, fmt.Errorf("get user info: %w", err)
 	}
+	log.Printf("[GitLab SSO] user info response: status=%d, body=%s", resp.StatusCode(), resp.String())
 	if resp.IsError() {
-		return nil, fmt.Errorf("get user info: status %d", resp.StatusCode())
+		return nil, fmt.Errorf("get user info: status %d, body: %s", resp.StatusCode(), resp.String())
 	}
 	if gitlabUser.Username == "" {
-		// 尝试解析原始响应
-		var raw map[string]interface{}
-		json.Unmarshal(resp.Body(), &raw)
 		return nil, fmt.Errorf("empty username in gitlab response: %s", string(resp.Body()))
 	}
+	log.Printf("[GitLab SSO] authenticated user: %s (id=%d)", gitlabUser.Username, gitlabUser.ID)
 	return &gitlabUser, nil
 }
 
