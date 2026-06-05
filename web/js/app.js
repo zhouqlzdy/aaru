@@ -2223,6 +2223,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 let dagState = { nodes: [], edges: [], nextId: 100, selectedNode: null, selectedEdge: null };
 
 async function loadPageBlueprintList(body) {
+  if (!body) body = document.getElementById('content-body');
   showLoading(body);
   try {
     const data = await api('/blueprints');
@@ -2261,7 +2262,7 @@ async function loadPageBlueprintEditor(bpId) {
   setPage('blueprints', bpId ? '编辑蓝图: '+escapeHtml(bp?.name||'') : '新建蓝图', '基于DAG的环境晋级策略编辑器');
   actions.innerHTML = `
     <button class="btn btn-primary" onclick="saveBlueprint(${bpId||0})">保存蓝图</button>
-    <button class="btn btn-secondary" onclick="loadPageBlueprintList()">返回列表</button>`;
+    <button class="btn btn-secondary" onclick="loadPage('blueprints')">返回列表</button>`;
 
   // Init DAG state
   if (bp) {
