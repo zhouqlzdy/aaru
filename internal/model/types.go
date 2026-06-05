@@ -13,7 +13,7 @@ type User struct {
 	Username     string    `gorm:"uniqueIndex;size:64" json:"username"`
 	Email        string    `gorm:"size:128" json:"email"`
 	AvatarURL    string    `gorm:"size:256" json:"avatar_url"`
-	GitlabID     int64     `gorm:"uniqueIndex" json:"gitlab_id"`
+	GitlabID     int64     `gorm:"index" json:"gitlab_id"`
 	AllowedSilos string    `gorm:"size:512" json:"allowed_silos"`  // ""=无权限, "*"=全部, "silo1,silo2"=指定
 	AllowedEnvs  string    `gorm:"size:512" json:"allowed_envs"`   // ""=无权限, "*"=全部, "env1,env2"=指定 (仅operator)
 	CreatedAt    time.Time `json:"created_at"`
