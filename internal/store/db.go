@@ -38,20 +38,22 @@ func (s *DBStore) DB() *gorm.DB { return s.db }
 func (s *DBStore) CreateUser(u *model.User) error { return s.db.Create(u).Error }
 
 // FindOrCreateUser 按用户名查找（含角色），不存在则创建，返回用户和是否新建。
+// 使用 FirstOrCreate 原子操作，避免查找与创建之间的竞态。
 func (s *DBStore) FindOrCreateUser(newUser *model.User) (*model.User, bool, error) {
-	existing, err := s.GetUserByUsername(newUser.Username)
-	if err == nil {
-		return existing, false, nil
+	var user model.User
+	result := s.db.Where("username = ?", newUser.Username).
+		Attrs(newUser).
+		FirstOrCreate(&user)
+	if result.Error != nil {
+		return nil, false, result.Error
 	}
-	// 只有 record not found 才创建，其他错误直接返回
-	if err != gorm.ErrRecordNotFound {
-		return nil, false, err
+	// RowsAffected=1 表示新创建，0 表示已存在
+	isNew := result.RowsAffected == 1
+	if !isNew {
+		// 已有用户，重新加载含角色权限的完整数据
+		s.db.Preload("Roles.Permissions").First(&user, user.ID)
 	}
-	newUser.ID = 0
-	if err := s.db.Create(newUser).Error; err != nil {
-		return nil, false, err
-	}
-	return newUser, true, nil
+	return &user, isNew, nil
 }
 
 func (s *DBStore) GetUserByUsername(name string) (*model.User, error) {
