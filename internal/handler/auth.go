@@ -144,39 +144,40 @@ func (h *AuthHandler) GitlabCallback(c *gin.Context) {
 	}
 
 	// 用 GitLab username 查找或创建 Aaru 用户
-	user, err := h.store.GetUserByUsername(gitlabUser.Username)
+	email := gitlabUser.Email
+	if email == "" {
+		email = gitlabUser.Username + "@gitlab.local"
+	}
+	user := &model.User{
+		Username:  gitlabUser.Username,
+		Email:     email,
+		GitlabID:  gitlabUser.ID,
+		AvatarURL: gitlabUser.Avatar,
+	}
+	isNew, err := h.store.FindOrCreateUser(user)
 	if err != nil {
-		user = &model.User{
-			Username:  gitlabUser.Username,
-			Email:     gitlabUser.Email,
-			GitlabID:  gitlabUser.ID,
-			AvatarURL: gitlabUser.Avatar,
-		}
-		if user.Email == "" {
-			user.Email = gitlabUser.Username + "@gitlab.local"
-		}
-		if err := h.store.CreateUser(user); err != nil {
-			c.HTML(http.StatusInternalServerError, "login.html", gin.H{
-				"Error":          "创建用户失败: " + err.Error(),
-				"GitlabEnabled":  h.authService.IsGitlabConfigured(),
-				"GitlabAuthURL":  h.authService.GitlabAuthURL(),
-			})
-			return
-		}
+		c.HTML(http.StatusInternalServerError, "login.html", gin.H{
+			"Error":          "创建用户失败: " + err.Error(),
+			"GitlabEnabled":  h.authService.IsGitlabConfigured(),
+			"GitlabAuthURL":  h.authService.GitlabAuthURL(),
+		})
+		return
+	}
+	if isNew {
 		// 新用户默认分配 viewer 角色
 		if viewerRole, err := h.store.GetRoleByName("viewer"); err == nil {
 			h.store.SetUserRoles(user.ID, []uint{viewerRole.ID})
 		}
+	} else {
+		// 已有用户，更新 GitLab 信息
+		if user.GitlabID == 0 {
+			user.GitlabID = gitlabUser.ID
+		}
+		if gitlabUser.Avatar != "" {
+			user.AvatarURL = gitlabUser.Avatar
+		}
+		h.store.DB().Save(user)
 	}
-
-	// 更新 GitLab 信息
-	if user.GitlabID == 0 {
-		user.GitlabID = gitlabUser.ID
-	}
-	if gitlabUser.Avatar != "" {
-		user.AvatarURL = gitlabUser.Avatar
-	}
-	h.store.DB().Save(user)
 
 	token, err := h.authService.GenerateToken(user)
 	if err != nil {

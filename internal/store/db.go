@@ -36,6 +36,19 @@ func (s *DBStore) DB() *gorm.DB { return s.db }
 
 // ========== User ==========
 func (s *DBStore) CreateUser(u *model.User) error { return s.db.Create(u).Error }
+
+// FindOrCreateUser 按用户名查找，不存在则创建，返回是否为新用户。
+func (s *DBStore) FindOrCreateUser(u *model.User) (isNew bool, err error) {
+	err = s.db.Where("username = ?", u.Username).First(u).Error
+	if err == nil {
+		return false, nil // 已存在
+	}
+	if err := s.db.Create(u).Error; err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (s *DBStore) GetUserByUsername(name string) (*model.User, error) {
 	var u model.User
 	err := s.db.Where("username = ?", name).Preload("Roles.Permissions").First(&u).Error
