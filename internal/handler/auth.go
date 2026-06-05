@@ -148,13 +148,13 @@ func (h *AuthHandler) GitlabCallback(c *gin.Context) {
 	if email == "" {
 		email = gitlabUser.Username + "@gitlab.local"
 	}
-	user := &model.User{
+	newUser := &model.User{
 		Username:  gitlabUser.Username,
 		Email:     email,
 		GitlabID:  gitlabUser.ID,
 		AvatarURL: gitlabUser.Avatar,
 	}
-	isNew, err := h.store.FindOrCreateUser(user)
+	user, isNew, err := h.store.FindOrCreateUser(newUser)
 	if err != nil {
 		c.HTML(http.StatusInternalServerError, "login.html", gin.H{
 			"Error":          "创建用户失败: " + err.Error(),
@@ -168,15 +168,22 @@ func (h *AuthHandler) GitlabCallback(c *gin.Context) {
 		if viewerRole, err := h.store.GetRoleByName("viewer"); err == nil {
 			h.store.SetUserRoles(user.ID, []uint{viewerRole.ID})
 		}
+		// 重新加载以获取角色信息
+		user, _ = h.store.GetUserByUsername(user.Username)
 	} else {
 		// 已有用户，更新 GitLab 信息
+		changed := false
 		if user.GitlabID == 0 {
 			user.GitlabID = gitlabUser.ID
+			changed = true
 		}
-		if gitlabUser.Avatar != "" {
+		if gitlabUser.Avatar != "" && user.AvatarURL != gitlabUser.Avatar {
 			user.AvatarURL = gitlabUser.Avatar
+			changed = true
 		}
-		h.store.DB().Save(user)
+		if changed {
+			h.store.DB().Save(user)
+		}
 	}
 
 	token, err := h.authService.GenerateToken(user)
