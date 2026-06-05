@@ -39,14 +39,12 @@ func (s *DBStore) CreateUser(u *model.User) error { return s.db.Create(u).Error 
 
 // FindOrCreateUser 按用户名查找，不存在则创建，返回是否为新用户。
 func (s *DBStore) FindOrCreateUser(u *model.User) (isNew bool, err error) {
-	err = s.db.Where("username = ?", u.Username).First(u).Error
-	if err == nil {
-		return false, nil // 已存在
+	u.ID = 0 // 清除可能残留的 ID，避免主键冲突
+	result := s.db.Where("username = ?", u.Username).FirstOrCreate(u)
+	if result.Error != nil {
+		return false, result.Error
 	}
-	if err := s.db.Create(u).Error; err != nil {
-		return false, err
-	}
-	return true, nil
+	return result.RowsAffected > 0, nil
 }
 
 func (s *DBStore) GetUserByUsername(name string) (*model.User, error) {
