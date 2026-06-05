@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"strings"
 
 	"aaru/internal/model"
 	"gorm.io/driver/mysql"
@@ -14,6 +15,15 @@ type DBStore struct{ db *gorm.DB }
 func NewDBStore(dsn string) (*DBStore, error) {
 	if dsn == "" {
 		return nil, fmt.Errorf("mysql dsn is required")
+	}
+
+	// 确保 DSN 包含 parseTime=True，否则 time.Time 字段扫描会失败
+	if !strings.Contains(dsn, "parseTime=") {
+		if strings.Contains(dsn, "?") {
+			dsn += "&parseTime=True"
+		} else {
+			dsn += "?parseTime=True"
+		}
 	}
 
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
@@ -38,22 +48,37 @@ func (s *DBStore) DB() *gorm.DB { return s.db }
 func (s *DBStore) CreateUser(u *model.User) error { return s.db.Create(u).Error }
 
 // FindOrCreateUser 按用户名查找（含角色），不存在则创建，返回用户和是否新建。
-// 使用 FirstOrCreate 原子操作，避免查找与创建之间的竞态。
 func (s *DBStore) FindOrCreateUser(newUser *model.User) (*model.User, bool, error) {
-	var user model.User
-	result := s.db.Where("username = ?", newUser.Username).
-		Attrs(newUser).
-		FirstOrCreate(&user)
-	if result.Error != nil {
-		return nil, false, result.Error
+	existing, err := s.GetUserByUsername(newUser.Username)
+	if err == nil {
+		return existing, false, nil
 	}
-	// RowsAffected=1 表示新创建，0 表示已存在
-	isNew := result.RowsAffected == 1
-	if !isNew {
-		// 已有用户，重新加载含角色权限的完整数据
-		s.db.Preload("Roles.Permissions").First(&user, user.ID)
+	if err != gorm.ErrRecordNotFound {
+		return nil, false, err
 	}
-	return &user, isNew, nil
+	// 用户不存在，尝试创建
+	newUser.ID = 0
+	if err := s.db.Create(newUser).Error; err != nil {
+		// 唯一键冲突 = 并发请求已创建，重新查找
+		if isDuplicateKeyErr(err) {
+			existing, err2 := s.GetUserByUsername(newUser.Username)
+			if err2 != nil {
+				return nil, false, err2
+			}
+			return existing, false, nil
+		}
+		return nil, false, err
+	}
+	return newUser, true, nil
+}
+
+// isDuplicateKeyErr 判断是否为 MySQL 唯一键冲突错误。
+func isDuplicateKeyErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "Duplicate entry") || strings.Contains(msg, "1062")
 }
 
 func (s *DBStore) GetUserByUsername(name string) (*model.User, error) {
