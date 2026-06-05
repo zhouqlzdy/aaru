@@ -83,6 +83,7 @@ type Release struct {
 	ChangesJSON    string                 `gorm:"type:text" json:"-"`
 	Changes        map[string]interface{} `gorm:"-" json:"changes,omitempty"`
 	Status         string                 `gorm:"size:32;default:draft;index" json:"status"`
+	DeprecatedAt   *time.Time             `json:"deprecated_at,omitempty"`
 	CreatedByID    uint                   `json:"created_by_id"`
 	CreatedBy      User                   `gorm:"foreignKey:CreatedByID" json:"created_by,omitempty"`
 	Stages         []ReleaseStage         `json:"stages,omitempty"`

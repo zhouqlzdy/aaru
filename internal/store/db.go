@@ -199,6 +199,15 @@ func (s *DBStore) GetReleaseWithStages(id uint) (*model.Release, error) {
 	}
 	return &r, nil
 }
+
+func (s *DBStore) GetRelease(id uint) (*model.Release, error) {
+	var r model.Release
+	err := s.db.First(&r, id).Error
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
 func (s *DBStore) CreateReleaseStage(stage *model.ReleaseStage) error {
 	return s.db.Create(stage).Error
 }
@@ -206,6 +215,15 @@ func (s *DBStore) GetStagesByStatus(status string) ([]model.ReleaseStage, error)
 	var stages []model.ReleaseStage
 	err := s.db.Where("status = ?", status).Preload("ApprovedBy").Preload("Release").Find(&stages).Error
 	return stages, err
+}
+
+func (s *DBStore) DeleteRelease(id uint) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("release_id = ?", id).Delete(&model.ReleaseStage{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&model.Release{}, id).Error
+	})
 }
 
 // ========== Blueprint ==========

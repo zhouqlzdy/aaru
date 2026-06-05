@@ -209,6 +209,35 @@ func (h *ReleaseHandler) WebhookPromote(c *gin.Context) {
 	c.JSON(http.StatusOK, release)
 }
 
+// DeprecateRelease 废弃发布
+func (h *ReleaseHandler) DeprecateRelease(c *gin.Context) {
+	id, ok := parseID(c, "id")
+	if !ok {
+		return
+	}
+	userID := c.GetUint("user_id")
+	release, err := h.releaseService.DeprecateRelease(id, userID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, release)
+}
+
+// DeleteRelease 删除已废弃的发布（仅admin，废弃后一周内）
+func (h *ReleaseHandler) DeleteRelease(c *gin.Context) {
+	id, ok := parseID(c, "id")
+	if !ok {
+		return
+	}
+	userID := c.GetUint("user_id")
+	if err := h.releaseService.DeleteRelease(id, userID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "release deleted"})
+}
+
 // RetryPush 重试停留在 pushing 状态的 stage
 func (h *ReleaseHandler) RetryPush(c *gin.Context) {
 	stageID, ok := parseID(c, "stageId")

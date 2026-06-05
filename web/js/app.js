@@ -26,7 +26,7 @@ function showLoading(container) {
 }
 
 function statusHTML(status) {
-  const names = {draft:'草稿',in_progress:'进行中',approved:'已通过',pushing:'推送中',completed:'已完成',rejected:'已驳回',failed:'失败',rolled_back:'已回滚',pending:'待处理',skipped:'已跳过'};
+  const names = {draft:'草稿',in_progress:'进行中',approved:'已通过',pushing:'推送中',completed:'已完成',rejected:'已驳回',failed:'失败',rolled_back:'已回滚',deprecated:'已废弃',pending:'待处理',skipped:'已跳过'};
   return `<span class="status-badge status-${status}">${names[status]||status}</span>`;
 }
 
@@ -112,7 +112,7 @@ async function renderReleaseList(body, actions) {
       <td>${statusHTML(r.status)}</td>
       <td>${escapeHtml(r.created_by?.username||'')}</td>
       <td>${fmtTime(r.created_at)}</td>
-      <td class="action-group">${r.status==='draft'?'<button class="btn btn-sm btn-primary" onclick="startRelease('+r.id+')">开始发布</button>':''}${r.status==='in_progress'||r.status==='completed'?'<button class="btn btn-sm btn-secondary" onclick="loadPage(\'release-detail\','+r.id+')">查看</button>':''}${r.status==='completed'||r.status==='in_progress'?'<button class="btn btn-sm btn-danger" onclick="rollbackRelease('+r.id+')">回滚</button>':''}</td>
+      <td class="action-group">${r.status==='draft'?'<button class="btn btn-sm btn-primary" onclick="startRelease('+r.id+')">开始发布</button>':''}${r.status==='in_progress'||r.status==='completed'?'<button class="btn btn-sm btn-secondary" onclick="loadPage(\'release-detail\','+r.id+')">查看</button>':''}${r.status==='completed'||r.status==='in_progress'?'<button class="btn btn-sm btn-danger" onclick="rollbackRelease('+r.id+')">回滚</button>':''}${r.status!=='deprecated'&&r.status!=='completed'?'<button class="btn btn-sm btn-warning" onclick="deprecateRelease('+r.id+')">废弃</button>':''}${r.status==='deprecated'?'<button class="btn btn-sm btn-secondary" onclick="loadPage(\'release-detail\','+r.id+')">查看</button>':''}${r.status==='deprecated'&&currentUser?.roles?.some(r=>r.name==='admin')?'<button class="btn btn-sm btn-danger" onclick="deleteRelease('+r.id+')">删除</button>':''}</td>
     </tr>`}).join('')}</tbody></table></div>`;
   } catch(e) { body.innerHTML = '<div class="empty-state"><p>加载失败: '+escapeHtml(e.message)+'</p></div>'; }
 }
@@ -130,6 +130,24 @@ async function rollbackRelease(id) {
   try {
     await api('/releases/'+id+'/rollback', { method:'POST' });
     toast('已回滚','success');
+    loadPage('releases');
+  } catch(e) { toast(e.message,'error'); }
+}
+
+async function deprecateRelease(id) {
+  if (!confirm('确认废弃此发布？废弃后将无法再审批，且一周内可删除。')) return;
+  try {
+    await api('/releases/'+id+'/deprecate', { method:'POST' });
+    toast('已废弃','success');
+    loadPage('releases');
+  } catch(e) { toast(e.message,'error'); }
+}
+
+async function deleteRelease(id) {
+  if (!confirm('确认删除此发布？此操作不可恢复！')) return;
+  try {
+    await api('/releases/'+id, { method:'DELETE' });
+    toast('已删除','success');
     loadPage('releases');
   } catch(e) { toast(e.message,'error'); }
 }
@@ -326,10 +344,12 @@ async function renderReleaseDetail(body, id) {
           <div class="release-meta-item"><span>状态</span><span>${statusHTML(r.status)}</span></div>
           <div class="release-meta-item"><span>创建者</span><span>${escapeHtml(r.created_by?.username||'')}</span></div>
           <div class="release-meta-item"><span>创建时间</span><span>${fmtTime(r.created_at)}</span></div>
+          ${r.deprecated_at?`<div class="release-meta-item"><span>废弃时间</span><span>${fmtTime(r.deprecated_at)}</span></div>`:''}
         </div>
       </div>
-      <div>${r.status==='draft'?'<button class="btn btn-primary" onclick="startRelease('+r.id+')">开始发布</button>':''}${r.status==='in_progress'||r.status==='completed'?'<button class="btn btn-danger" onclick="rollbackRelease('+r.id+')">回滚</button>':''}</div>
+      <div>${r.status==='draft'?'<button class="btn btn-primary" onclick="startRelease('+r.id+')">开始发布</button>':''}${r.status==='in_progress'||r.status==='completed'?'<button class="btn btn-danger" onclick="rollbackRelease('+r.id+')">回滚</button>':''}${r.status!=='deprecated'&&r.status!=='completed'?'<button class="btn btn-warning" onclick="deprecateRelease('+r.id+')">废弃</button>':''}${r.status==='deprecated'&&currentUser?.roles?.some(rl=>rl.name==='admin')?(() => { const days = r.deprecated_at ? Math.max(0, 7 - Math.floor((Date.now() - new Date(r.deprecated_at).getTime()) / 86400000)) : 0; return days > 0 ? '<button class="btn btn-danger" onclick="deleteRelease('+r.id+')">删除（剩余'+days+'天）</button>' : '<button class="btn btn-sm" disabled>删除窗口已过期</button>'; })() : ''}</div>
     </div>
+    ${r.status==='deprecated'?`<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:12px 16px;margin-bottom:24px;color:#92400e;font-size:13px">⚠️ 此发布已废弃，所有审批和推进操作已停止。${r.deprecated_at?`废弃时间：${fmtTime(r.deprecated_at)}`:''}</div>`:''}
     ${changesHTML}
     <div class="card" style="margin-bottom:24px"><div class="card-header"><div class="card-title">发布流水线</div></div><div class="card-body" id="release-pipeline-container"><div style="text-align:center;color:var(--text-muted)">加载流水线…</div></div></div>
     <div class="card"><div class="card-header"><div class="card-title">阶段详情</div></div><div class="card-body" id="stage-table-container"><div style="text-align:center;color:var(--text-muted)">加载中…</div></div></div>`;

@@ -2,10 +2,13 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"time"
+
+	"gorm.io/gorm"
 
 	"aaru/internal/model"
 	"aaru/internal/store"
@@ -485,6 +488,9 @@ func (r *ReleaseService) ApproveStage(stageID, userID uint, comment string) (*mo
 	if err != nil {
 		return nil, err
 	}
+	if release.Status == "deprecated" {
+		return nil, fmt.Errorf("release is deprecated, cannot approve")
+	}
 	if !r.permSvc.CanApprove(userID, release.SiloCode, stage.EnvCode) {
 		return nil, fmt.Errorf("permission denied")
 	}
@@ -525,6 +531,9 @@ func (r *ReleaseService) RejectStage(stageID, userID uint, comment string) (*mod
 	release, err := r.store.GetReleaseWithStages(stage.ReleaseID)
 	if err != nil {
 		return nil, err
+	}
+	if release.Status == "deprecated" {
+		return nil, fmt.Errorf("release is deprecated, cannot reject")
 	}
 	if !r.permSvc.CanApprove(userID, release.SiloCode, stage.EnvCode) {
 		return nil, fmt.Errorf("permission denied")
@@ -582,6 +591,9 @@ func (r *ReleaseService) PromoteToNext(stageID, userID uint) (*model.Release, er
 	if err != nil {
 		return nil, fmt.Errorf("get release: %w", err)
 	}
+	if release.Status == "deprecated" {
+		return nil, fmt.Errorf("release is deprecated, cannot promote")
+	}
 	if !r.permSvc.CanDeploy(userID, release.SiloCode) {
 		return nil, fmt.Errorf("permission denied")
 	}
@@ -634,6 +646,9 @@ func (r *ReleaseService) RetryPush(stageID, userID uint) (*model.Release, error)
 	release, err := r.store.GetReleaseWithStages(stage.ReleaseID)
 	if err != nil {
 		return nil, err
+	}
+	if release.Status == "deprecated" {
+		return nil, fmt.Errorf("release is deprecated, cannot retry push")
 	}
 	if !r.permSvc.CanDeploy(userID, release.SiloCode) {
 		return nil, fmt.Errorf("permission denied")
@@ -702,6 +717,76 @@ func (r *ReleaseService) GetPendingApprovals(userID uint) ([]model.ReleaseStage,
 	return filtered, nil
 }
 
+// DeprecateRelease 废弃发布：不允许再审批，废弃后一周内可删除
+func (r *ReleaseService) DeprecateRelease(releaseID, userID uint) (*model.Release, error) {
+	release, err := r.store.GetReleaseWithStages(releaseID)
+	if err != nil {
+		return nil, fmt.Errorf("get release: %w", err)
+	}
+	if release.Status == "deprecated" {
+		return nil, fmt.Errorf("release already deprecated")
+	}
+	if release.Status == "completed" {
+		return nil, fmt.Errorf("cannot deprecate completed release")
+	}
+	// 创建者或 admin 可以废弃
+	user, err := r.store.GetUserWithRoles(userID)
+	if err != nil {
+		return nil, fmt.Errorf("get user: %w", err)
+	}
+	isAdmin := hasRole(user, "admin")
+	if !isAdmin && release.CreatedByID != userID {
+		return nil, fmt.Errorf("permission denied: only creator or admin can deprecate")
+	}
+
+	now := time.Now()
+	release.Status = "deprecated"
+	release.DeprecatedAt = &now
+
+	// 将 in_progress/pending 的 stage 标记为 skipped
+	for i := range release.Stages {
+		if release.Stages[i].Status == "in_progress" || release.Stages[i].Status == "pending" || release.Stages[i].Status == "pushing" {
+			release.Stages[i].Status = "skipped"
+			r.store.DB().Save(&release.Stages[i])
+		}
+	}
+
+	if err := r.store.DB().Save(release).Error; err != nil {
+		return nil, fmt.Errorf("save release: %w", err)
+	}
+	r.reloadRelease(release)
+	return release, nil
+}
+
+// DeleteRelease 删除已废弃的发布（仅 admin，废弃后一周内可操作）
+func (r *ReleaseService) DeleteRelease(releaseID, userID uint) error {
+	release, err := r.store.GetRelease(releaseID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("release not found")
+		}
+		return fmt.Errorf("get release: %w", err)
+	}
+	if release.Status != "deprecated" {
+		return fmt.Errorf("only deprecated releases can be deleted")
+	}
+	if release.DeprecatedAt == nil {
+		return fmt.Errorf("release has no deprecated timestamp")
+	}
+	if time.Since(*release.DeprecatedAt) > 7*24*time.Hour {
+		return fmt.Errorf("deprecation window expired (7 days), cannot delete")
+	}
+	// 仅 admin 可删除
+	user, err := r.store.GetUserWithRoles(userID)
+	if err != nil {
+		return fmt.Errorf("get user: %w", err)
+	}
+	if !hasRole(user, "admin") {
+		return fmt.Errorf("permission denied: only admin can delete releases")
+	}
+	return r.store.DeleteRelease(releaseID)
+}
+
 // WebhookPromote 通过webhook token自动晋级（由外部系统调用）
 func (r *ReleaseService) WebhookPromote(stageID uint, token string) (*model.Release, error) {
 	var stage model.ReleaseStage
@@ -715,6 +800,9 @@ func (r *ReleaseService) WebhookPromote(stageID uint, token string) (*model.Rele
 	release, err := r.store.GetReleaseWithStages(stage.ReleaseID)
 	if err != nil {
 		return nil, err
+	}
+	if release.Status == "deprecated" {
+		return nil, fmt.Errorf("release is deprecated, cannot promote")
 	}
 
 	if release.BlueprintID == nil || stage.NodeID == nil {

@@ -89,6 +89,8 @@ func RegisterRoutes(
 		api.GET("/releases/:id", releaseHandler.GetRelease)
 		api.POST("/releases/:id/start", releaseHandler.StartRelease)
 		api.POST("/releases/:id/rollback", releaseHandler.RollbackRelease)
+		api.POST("/releases/:id/deprecate", releaseHandler.DeprecateRelease)
+		api.DELETE("/releases/:id", releaseHandler.DeleteRelease)
 
 		// 发布阶段
 		api.POST("/stages/:stageId/approve", releaseHandler.ApproveStage)

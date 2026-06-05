@@ -47,6 +47,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Ro
 .btn-secondary{background:#fff;color:var(--text);border:1px solid var(--border)}
 .btn-success{background:#16a34a;color:#fff}
 .btn-danger{background:#ef4444;color:#fff}
+.btn-warning{background:#f59e0b;color:#fff}
 .btn-sm{padding:4px 10px;font-size:12px}
 .content-body{flex:1;padding:24px;overflow-y:auto}
 .card{background:var(--card);border:1px solid var(--border);border-radius:8px}
@@ -66,6 +67,8 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Ro
 .status-rejected::before,.status-failed::before{background:#ef4444}
 .status-rolled_back,.status-pending{background:#f3f4f6;color:#4b5563}
 .status-rolled_back::before,.status-pending::before{background:#9ca3af}
+.status-deprecated{background:#e5e7eb;color:#374151}
+.status-deprecated::before{background:#6b7280}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
 
 .data-table{width:100%;border-collapse:collapse;font-size:13px}
@@ -191,6 +194,8 @@ textarea.form-control{resize:vertical;min-height:80px}
 .pipeline-dag-node.status-completed text { fill:#065f46; }
 .pipeline-dag-node.status-rejected rect { fill:#fee2e2; stroke:#ef4444; }
 .pipeline-dag-node.status-rejected text { fill:#991b1b; }
+.pipeline-dag-node.status-skipped rect { fill:#f3f4f6; stroke:#9ca3af; stroke-dasharray:4 2; }
+.pipeline-dag-node.status-skipped text { fill:#9ca3af; }
 .pipeline-dag-node.active rect { stroke-width:2.5; filter:drop-shadow(0 0 4px rgba(59,130,246,0.5)); }
 .pipeline-dag-edge { fill:none; stroke:#9ca3af; stroke-width:1.5; }
 .pipeline-dag-edge.completed { stroke:#10b981; stroke-width:2; }

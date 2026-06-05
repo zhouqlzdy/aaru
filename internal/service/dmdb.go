@@ -57,7 +57,7 @@ func (d *DMDBClient) get(path string, result interface{}) error {
 // ListEnvironments 获取环境列表
 func (d *DMDBClient) ListEnvironments() ([]model.EnvInfo, error) {
 	var resp model.DMDBListResponse
-	if err := d.get("/api/list/env", &resp); err != nil {
+	if err := d.get("/api/list/env-raw", &resp); err != nil {
 		return nil, err
 	}
 	var envs []model.EnvInfo
