@@ -37,6 +37,43 @@ func (r *ReleaseService) notifyStageActivated(release *model.Release, stage *mod
 	}
 }
 
+// loadStageAndRelease 加载 stage 及其所属 release
+func (r *ReleaseService) loadStageAndRelease(stageID uint) (*model.ReleaseStage, *model.Release, error) {
+	var stage model.ReleaseStage
+	if err := r.store.DB().First(&stage, stageID).Error; err != nil {
+		return nil, nil, fmt.Errorf("stage not found")
+	}
+	release, err := r.store.GetReleaseWithStages(stage.ReleaseID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &stage, release, nil
+}
+
+// allParentsCompleted 检查 stage 的所有父节点是否已完成
+func (r *ReleaseService) allParentsCompleted(release *model.Release, stage *model.ReleaseStage) error {
+	if release.BlueprintID == nil || stage.NodeID == nil {
+		return nil
+	}
+	parents, _ := r.bpService.GetParentNodeIDs(*release.BlueprintID, *stage.NodeID)
+	for _, pid := range parents {
+		found := false
+		for _, s := range release.Stages {
+			if s.NodeID != nil && *s.NodeID == pid {
+				if s.Status != "completed" {
+					return fmt.Errorf("parent stage not yet completed")
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("parent stage not found")
+		}
+	}
+	return nil
+}
+
 // reloadRelease 重新加载 release（含 stages），用于操作后刷新数据。
 func (r *ReleaseService) reloadRelease(release *model.Release) {
 	if reloaded, err := r.store.GetReleaseWithStages(release.ID); err == nil {
@@ -495,17 +532,12 @@ func (r *ReleaseService) checkReleaseCompleted(release *model.Release) {
 }
 
 func (r *ReleaseService) ApproveStage(stageID, userID uint, comment string) (*model.Release, error) {
-	var stage model.ReleaseStage
-	if err := r.store.DB().First(&stage, stageID).Error; err != nil {
-		return nil, fmt.Errorf("stage not found")
+	stage, release, err := r.loadStageAndRelease(stageID)
+	if err != nil {
+		return nil, err
 	}
 	if stage.Status != "in_progress" {
 		return nil, fmt.Errorf("stage not in progress")
-	}
-
-	release, err := r.store.GetReleaseWithStages(stage.ReleaseID)
-	if err != nil {
-		return nil, err
 	}
 	if release.Status == "deprecated" {
 		return nil, fmt.Errorf("release is deprecated, cannot approve")
@@ -514,18 +546,17 @@ func (r *ReleaseService) ApproveStage(stageID, userID uint, comment string) (*mo
 		return nil, fmt.Errorf("permission denied")
 	}
 
-	// 审批通过
 	stage.Status = "approved"
 	stage.ApprovedByID = &userID
 	stage.Comment = comment
 	t := time.Now()
 	stage.ApprovedAt = &t
-	if err := r.store.DB().Save(&stage).Error; err != nil {
+	if err := r.store.DB().Save(stage).Error; err != nil {
 		return nil, fmt.Errorf("save stage: %w", err)
 	}
 
 	// 推送变更到 DMDB
-	if err := r.applyChanges(release, &stage); err != nil {
+	if err := r.applyChanges(release, stage); err != nil {
 		// 推送失败，stage 停留在 pushing，返回错误
 		r.reloadRelease(release)
 		return release, fmt.Errorf("config push failed: %w (stage stuck in pushing, use retry)", err)
@@ -540,16 +571,12 @@ func (r *ReleaseService) ApproveStage(stageID, userID uint, comment string) (*mo
 }
 
 func (r *ReleaseService) RejectStage(stageID, userID uint, comment string) (*model.Release, error) {
-	var stage model.ReleaseStage
-	if err := r.store.DB().First(&stage, stageID).Error; err != nil {
-		return nil, fmt.Errorf("stage not found")
+	stage, release, err := r.loadStageAndRelease(stageID)
+	if err != nil {
+		return nil, err
 	}
 	if stage.Status != "in_progress" {
 		return nil, fmt.Errorf("stage not in progress")
-	}
-	release, err := r.store.GetReleaseWithStages(stage.ReleaseID)
-	if err != nil {
-		return nil, err
 	}
 	if release.Status == "deprecated" {
 		return nil, fmt.Errorf("release is deprecated, cannot reject")
@@ -562,7 +589,7 @@ func (r *ReleaseService) RejectStage(stageID, userID uint, comment string) (*mod
 	stage.Comment = comment
 	t := time.Now()
 	stage.ApprovedAt = &t
-	if err := r.store.DB().Save(&stage).Error; err != nil {
+	if err := r.store.DB().Save(stage).Error; err != nil {
 		return nil, fmt.Errorf("save stage: %w", err)
 	}
 
@@ -575,16 +602,12 @@ func (r *ReleaseService) RejectStage(stageID, userID uint, comment string) (*mod
 }
 
 func (r *ReleaseService) PromoteToNext(stageID, userID uint) (*model.Release, error) {
-	var stage model.ReleaseStage
-	if err := r.store.DB().First(&stage, stageID).Error; err != nil {
-		return nil, fmt.Errorf("stage not found")
+	stage, release, err := r.loadStageAndRelease(stageID)
+	if err != nil {
+		return nil, err
 	}
 	if stage.Status != "pending" {
 		return nil, fmt.Errorf("stage not pending")
-	}
-	release, err := r.store.GetReleaseWithStages(stage.ReleaseID)
-	if err != nil {
-		return nil, fmt.Errorf("get release: %w", err)
 	}
 	if release.Status == "deprecated" {
 		return nil, fmt.Errorf("release is deprecated, cannot promote")
@@ -592,37 +615,21 @@ func (r *ReleaseService) PromoteToNext(stageID, userID uint) (*model.Release, er
 	if !r.permSvc.CanDeploy(userID, release.SiloCode) {
 		return nil, fmt.Errorf("permission denied")
 	}
-
 	if release.BlueprintID == nil {
 		return nil, fmt.Errorf("blueprint required")
 	}
 	if stage.NodeID == nil {
 		return nil, fmt.Errorf("stage has no node")
 	}
-
-	// 检查所有父节点必须 completed
-	parents, _ := r.bpService.GetParentNodeIDs(*release.BlueprintID, *stage.NodeID)
-	for _, pid := range parents {
-		found := false
-		for _, s := range release.Stages {
-			if s.NodeID != nil && *s.NodeID == pid {
-				if s.Status != "completed" {
-					return nil, fmt.Errorf("parent stage not yet completed")
-				}
-				found = true
-				break
-			}
-		}
-		if !found {
-			return nil, fmt.Errorf("parent stage not found")
-		}
+	if err := r.allParentsCompleted(release, stage); err != nil {
+		return nil, err
 	}
 
 	stage.Status = "in_progress"
-	if err := r.store.DB().Save(&stage).Error; err != nil {
+	if err := r.store.DB().Save(stage).Error; err != nil {
 		return nil, fmt.Errorf("save stage: %w", err)
 	}
-	r.notifyStageActivated(release, &stage)
+	r.notifyStageActivated(release, stage)
 	r.autoProgress(release.ID, stage.ID)
 
 	r.reloadRelease(release)
@@ -631,17 +638,12 @@ func (r *ReleaseService) PromoteToNext(stageID, userID uint) (*model.Release, er
 
 // RetryPush 重试停留在 pushing 状态的 stage
 func (r *ReleaseService) RetryPush(stageID, userID uint) (*model.Release, error) {
-	var stage model.ReleaseStage
-	if err := r.store.DB().First(&stage, stageID).Error; err != nil {
-		return nil, fmt.Errorf("stage not found")
+	stage, release, err := r.loadStageAndRelease(stageID)
+	if err != nil {
+		return nil, err
 	}
 	if stage.Status != "pushing" {
 		return nil, fmt.Errorf("stage not in pushing status")
-	}
-
-	release, err := r.store.GetReleaseWithStages(stage.ReleaseID)
-	if err != nil {
-		return nil, err
 	}
 	if release.Status == "deprecated" {
 		return nil, fmt.Errorf("release is deprecated, cannot retry push")
@@ -650,7 +652,7 @@ func (r *ReleaseService) RetryPush(stageID, userID uint) (*model.Release, error)
 		return nil, fmt.Errorf("permission denied")
 	}
 
-	if err := r.applyChanges(release, &stage); err != nil {
+	if err := r.applyChanges(release, stage); err != nil {
 		r.reloadRelease(release)
 		return release, fmt.Errorf("retry push failed: %w", err)
 	}
@@ -792,25 +794,20 @@ func (r *ReleaseService) DeleteRelease(releaseID, userID uint) error {
 
 // WebhookPromote 通过webhook token自动晋级（由外部系统调用）
 func (r *ReleaseService) WebhookPromote(stageID uint, token string) (*model.Release, error) {
-	var stage model.ReleaseStage
-	if err := r.store.DB().First(&stage, stageID).Error; err != nil {
-		return nil, fmt.Errorf("stage not found")
+	stage, release, err := r.loadStageAndRelease(stageID)
+	if err != nil {
+		return nil, err
 	}
 	if stage.Status != "pending" {
 		return nil, fmt.Errorf("stage not pending")
 	}
-
-	release, err := r.store.GetReleaseWithStages(stage.ReleaseID)
-	if err != nil {
-		return nil, err
-	}
 	if release.Status == "deprecated" {
 		return nil, fmt.Errorf("release is deprecated, cannot promote")
 	}
-
 	if release.BlueprintID == nil || stage.NodeID == nil {
 		return nil, fmt.Errorf("not a blueprint release")
 	}
+
 	nodes, _ := r.store.GetBlueprintNodes(*release.BlueprintID)
 	var bpNode *model.BlueprintNode
 	for i := range nodes {
@@ -829,24 +826,15 @@ func (r *ReleaseService) WebhookPromote(stageID uint, token string) (*model.Rele
 		return nil, fmt.Errorf("invalid webhook token")
 	}
 
-	// 检查所有父节点 completed
-	parents, _ := r.bpService.GetParentNodeIDs(*release.BlueprintID, *stage.NodeID)
-	for _, pid := range parents {
-		for _, s := range release.Stages {
-			if s.NodeID != nil && *s.NodeID == pid {
-				if s.Status != "completed" {
-					return nil, fmt.Errorf("parent stage not yet completed")
-				}
-				break
-			}
-		}
+	if err := r.allParentsCompleted(release, stage); err != nil {
+		return nil, err
 	}
 
 	stage.Status = "in_progress"
-	if err := r.store.DB().Save(&stage).Error; err != nil {
+	if err := r.store.DB().Save(stage).Error; err != nil {
 		return nil, fmt.Errorf("save stage: %w", err)
 	}
-	r.notifyStageActivated(release, &stage)
+	r.notifyStageActivated(release, stage)
 	r.autoProgress(release.ID, stage.ID)
 
 	r.reloadRelease(release)

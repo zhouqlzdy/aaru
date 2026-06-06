@@ -7,7 +7,7 @@ import { renderDeployUnits, duSnapshots } from './pages/deploy-units.js';
 import { renderReleaseList, renderReleaseDetail } from './pages/releases.js';
 import { renderCreateRelease, crSnapshots } from './pages/create-release.js';
 import { renderBatchRelease } from './pages/batch-release.js';
-import { loadPageBlueprintList, loadPageBlueprintEditor, envCache, roleCache } from './pages/blueprints.js';
+import { loadPageBlueprintList, envCache, roleCache } from './pages/blueprints.js';
 
 // ===== SPA Router =====
 async function loadPage(page, param) {
@@ -61,5 +61,3 @@ document.addEventListener('DOMContentLoaded', async () => {
 // ===== Expose functions for inline onclick handlers =====
 window.loadPage = loadPage;
 window.logout = logout;
-window.loadPageBlueprintEditor = loadPageBlueprintEditor;
-window.loadPageBlueprintList = loadPageBlueprintList;

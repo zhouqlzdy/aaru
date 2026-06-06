@@ -287,9 +287,6 @@ func (s *DBStore) SaveNode(node *model.BlueprintNode) error {
 func (s *DBStore) DeleteNode(id uint) error {
 	return s.db.Delete(&model.BlueprintNode{}, id).Error
 }
-func (s *DBStore) DeleteNodesByBlueprint(bpID uint) error {
-	return s.db.Where("blueprint_id = ?", bpID).Delete(&model.BlueprintNode{}).Error
-}
 func (s *DBStore) GetBlueprintNodes(bpID uint) ([]model.BlueprintNode, error) {
 	var nodes []model.BlueprintNode
 	err := s.db.Where("blueprint_id = ?", bpID).Find(&nodes).Error
@@ -305,9 +302,6 @@ func (s *DBStore) CreateEdges(edges []model.BlueprintEdge) error {
 }
 func (s *DBStore) DeleteEdge(id uint) error {
 	return s.db.Delete(&model.BlueprintEdge{}, id).Error
-}
-func (s *DBStore) DeleteEdgesByBlueprint(bpID uint) error {
-	return s.db.Where("blueprint_id = ?", bpID).Delete(&model.BlueprintEdge{}).Error
 }
 func (s *DBStore) GetBlueprintEdges(bpID uint) ([]model.BlueprintEdge, error) {
 	var edges []model.BlueprintEdge

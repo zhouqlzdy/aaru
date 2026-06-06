@@ -35,11 +35,10 @@ async function loadPageBlueprintEditor(bpId) {
     try { bp = await api('/blueprints/'+bpId); } catch(e) {}
   }
 
-  // Load envs for node selector
-  try { const d = await api('/environments'); envCache = d.envs||[]; } catch(e) {}
-
-  // Load roles for gate config
-  try { const d = await api('/admin/roles'); roleCache = d.roles||[]; } catch(e) {}
+  // 确保 envCache 已加载（app.js 初始化时加载，此处兜底）
+  if (envCache.length === 0) {
+    try { const d = await api('/environments'); envCache = d.envs||[]; } catch(e) {}
+  }
 
   setPage('blueprints', bpId ? '编辑蓝图: '+escapeHtml(bp?.name||'') : '新建蓝图', '基于DAG的环境晋级策略编辑器');
   actions.innerHTML = `

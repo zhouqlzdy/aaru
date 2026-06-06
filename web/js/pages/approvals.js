@@ -183,7 +183,13 @@ function renderFilteredHistory() {
 // ===== Tab switching =====
 function switchApprovalTab(tab) {
   activeTab = tab;
-  renderApprovals(document.getElementById('content-body'));
+  // 更新按钮样式
+  document.querySelectorAll('.card-header .btn-sm').forEach(btn => {
+    btn.className = btn.className.replace(/btn-primary|btn-ghost/g, '').trim();
+  });
+  const targetBtn = [...document.querySelectorAll('.card-header .btn-sm')].find(b => b.textContent.includes(tab === 'pending' ? '待审批' : '审批历史'));
+  if (targetBtn) targetBtn.classList.add('btn-primary');
+  renderTabContent();
 }
 
 // ===== Batch operations =====

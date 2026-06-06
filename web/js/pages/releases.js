@@ -195,7 +195,6 @@ async function renderReleasePipeline(blueprintId, stages) {
     }).join('');
 
     // 渲染节点
-    const statusLabel = { pending:'待处理', in_progress:'进行中', approved:'已通过', pushing:'推送中', completed:'已完成', rejected:'已驳回' };
     const nodesHTML = nodes.map(n => {
       const st = getNodeStatus(n);
       const active = st === 'in_progress' || st === 'pushing' || st === 'approved';
@@ -376,17 +375,6 @@ async function rejectStage(id) {
   try { await api('/stages/'+id+'/reject', { method:'POST', body:JSON.stringify({comment}) }); toast('已驳回','info'); loadPage('releases'); }
   catch(e) { toast(e.message,'error'); }
 }
-async function promoteStage(id) {
-  if (!confirm('确认将此发布推进到此环境？')) return;
-  try { await api('/stages/'+id+'/promote', { method:'POST' }); toast('已推进','success'); loadPage('releases'); }
-  catch(e) { toast(e.message,'error'); }
-}
-async function retryPush(id) {
-  if (!confirm('确认重试推送配置到DMDB？')) return;
-  try { await api('/stages/'+id+'/retry-push', { method:'POST' }); toast('推送成功','success'); loadPage('releases'); }
-  catch(e) { toast(e.message,'error'); }
-}
-
 // 蓝图详情模态框
 async function showBlueprintModal(blueprintId, releaseId) {
   if (!blueprintId) return;
@@ -521,8 +509,6 @@ window.deprecateRelease = deprecateRelease;
 window.deleteRelease = deleteRelease;
 window.approveStage = approveStage;
 window.rejectStage = rejectStage;
-window.promoteStage = promoteStage;
-window.retryPush = retryPush;
 window.showBlueprintModal = showBlueprintModal;
 window.toggleAllReleases = toggleAllReleases;
 window.updateReleaseBatchBar = updateReleaseBatchBar;

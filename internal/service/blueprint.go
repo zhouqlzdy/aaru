@@ -113,14 +113,28 @@ func (b *BlueprintService) structureChanged(oldNodes []model.BlueprintNode, oldE
 			return true
 		}
 	}
-	// 比较边：用 env_code 对表示
+	// 通过 env_code 对比较边：旧边用 DB ID→env_code，新边用客户端 ID→env_code
+	oldIDToEnv := make(map[uint]string, len(oldNodes))
+	for _, n := range oldNodes {
+		oldIDToEnv[n.ID] = n.EnvCode
+	}
+	newIDToEnv := make(map[uint]string, len(newNodes))
+	for _, n := range newNodes {
+		newIDToEnv[n.ID] = n.EnvCode
+	}
 	oldEdgeSet := make(map[string]bool, len(oldEdges))
 	for _, e := range oldEdges {
-		oldEdgeSet[fmt.Sprintf("%d->%d", e.FromNodeID, e.ToNodeID)] = true
+		from := oldIDToEnv[e.FromNodeID]
+		to := oldIDToEnv[e.ToNodeID]
+		oldEdgeSet[from+"->"+to] = true
 	}
-	// 新边的 from/to 是客户端 ID，需要转换为 env_code 对来比较
-	// 但由于 oldID→env_code 映射在客户端可能已变，这里直接用 ID 集合
-	// 如果节点没变，边的 ID 对也不会变；如果节点变了（上面已检测），这里不会执行到
+	for _, e := range newEdges {
+		from := newIDToEnv[e.FromNodeID]
+		to := newIDToEnv[e.ToNodeID]
+		if !oldEdgeSet[from+"->"+to] {
+			return true
+		}
+	}
 	return false
 }
 
