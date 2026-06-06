@@ -285,4 +285,6 @@ window.brSubmitBatch = async function() {
   } catch(e) { toast(e.message, 'error'); }
 };
 
+window.renderBatchRelease = renderBatchRelease;
+
 export { renderBatchRelease };
