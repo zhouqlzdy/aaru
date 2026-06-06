@@ -14,6 +14,7 @@ let crSelectedBP = null;
 let crBlueprintEnvs = new Set(); // 蓝图涉及的环境代码集合
 let crPerEnvMode = new Set(); // fields in per-env mode
 let crPerEnvVals = {};        // {fieldName: {envCode: val}}
+let crTitleAutoGen = true;    // 标题是否为自动生成（未被用户手动修改）
 
 // All editable fields grouped
 const CR_SCALAR_FIELDS = [
@@ -41,7 +42,7 @@ const CR_FIELD_GROUPS = [
 async function renderCreateRelease(body, actions) {
   crStep = 1; crTitle = ''; crSelectedDU = null; crSnapshots = [];
   crChanges = {}; crExtraFields = []; crSelectedBP = null; crBlueprintEnvs = new Set();
-  crPerEnvMode = new Set(); crPerEnvVals = {};
+  crPerEnvMode = new Set(); crPerEnvVals = {}; crTitleAutoGen = true;
   body.style.overflow = 'hidden';
   body.style.display = 'flex';
   body.style.flexDirection = 'column';
@@ -93,7 +94,7 @@ function crStep1() {
         <div style="display:flex;flex-direction:column;gap:16px">
           <div class="cr-section" style="margin-bottom:0;flex-shrink:0"><div class="cr-section-title">基本信息</div>
             <div class="form-group"><label class="form-label">发布标题</label>
-              <input class="form-control" id="cr-title" value="${escapeHtml(crTitle)}" placeholder="例: v2.1.0 发版" onchange="crTitle=this.value"></div>
+              <input class="form-control" id="cr-title" value="${escapeHtml(crTitle)}" placeholder="选择DU和版本后自动生成，可手动修改" oninput="crTitle=this.value;crTitleAutoGen=false"></div>
           </div>
           <div class="cr-section" style="margin-bottom:0;flex-shrink:0"><div class="cr-section-title">选择晋级蓝图</div>
             <div class="form-group">
@@ -148,9 +149,11 @@ window.crFilterDUList = function() {
 
 window.crSelectDU = function(d) {
   crSelectedDU = d;
+  crTitleAutoGen = true; // 切换 DU 时重置标记，允许自动生成
   document.querySelectorAll('#cr-du-list .du-list-item').forEach(el=>{
     el.classList.toggle('selected', el.querySelector('.du-item-code')?.textContent===d.code);
   });
+  crAutoGenTitle();
   crUpdateNextBtn();
 };
 
@@ -455,7 +458,20 @@ window.crRemoveField = function(f) {
   crRenderStep(document.getElementById('content-body'));
 };
 
-window.crSetChange = function(f, v) { crChanges[f] = v; };
+window.crSetChange = function(f, v) {
+  crChanges[f] = v;
+  if (f === 'ArtifactVersion') crAutoGenTitle();
+};
+
+function crAutoGenTitle() {
+  if (!crTitleAutoGen) return;
+  const code = crSelectedDU?.code || '';
+  const ver = crChanges.ArtifactVersion || '';
+  const title = [code, ver].filter(Boolean).join(' ');
+  crTitle = title;
+  const el = document.getElementById('cr-title');
+  if (el) el.value = title;
+}
 
 window.crSelectBP = function(id) {
   crSelectedBP = id ? (crBlueprints.find(b=>b.id===id)||null) : null;

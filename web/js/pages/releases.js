@@ -17,16 +17,24 @@ async function renderReleaseList(body, actions) {
       body.innerHTML = '<div class="empty-state"><svg width="40" height="40" viewBox="0 0 40 40" fill="none"><rect x="6" y="6" width="28" height="28" rx="4" stroke="#d1d5db" stroke-width="1.5"/><path d="M14 20h12M20 14v12" stroke="#d1d5db" stroke-width="1.5"/></svg><p>暂无发布单，创建一个开始吧</p><button class="btn btn-primary" onclick="loadPage(\'create-release\')">+ 新建发布</button></div>';
       return;
     }
-    const page = data.page || 1;
-    const total = data.total || 0;
     // 缓存每条发布的stages供蓝图模态框使用
     releaseStagesMap = {};
     releases.forEach(r => { releaseStagesMap[r.id] = r.stages || []; });
-    body.innerHTML = `<div class="card"><table class="data-table"><thead><tr><th>标题</th><th>部署单元</th><th>版本</th><th>蓝图</th><th>状态</th><th>创建者</th><th>时间</th><th>操作</th></tr></thead><tbody>${releases.map(r=>{
+    body.innerHTML = `
+      <div id="release-batch-bar" style="display:none;position:sticky;top:0;z-index:10;background:var(--bg,#fff);border:1px solid var(--border,#e5e7eb);border-radius:8px;padding:8px 12px;margin-bottom:8px;align-items:center;gap:12px">
+        <span id="release-batch-count" style="font-size:13px;color:var(--text-muted)">已选 0 项</span>
+        <button class="btn btn-sm btn-warning" onclick="batchDeprecateReleases()">批量废弃</button>
+        <button class="btn btn-sm btn-danger" onclick="batchDeleteReleases()">批量删除</button>
+      </div>
+      <div class="card"><table class="data-table"><thead><tr>
+        <th style="width:36px"><input type="checkbox" id="release-check-all" onchange="toggleAllReleases(this)"></th>
+        <th>标题</th><th>部署单元</th><th>版本</th><th>蓝图</th><th>状态</th><th>创建者</th><th>时间</th><th>操作</th>
+      </tr></thead><tbody>${releases.map(r=>{
       const bpName = r.blueprint?.name||'';
       const bpId = r.blueprint_id||0;
       const bpCell = bpName ? `<a href="#" class="text-link" onclick="showBlueprintModal(${bpId},${r.id});return false" title="查看蓝图详情">${escapeHtml(bpName)}</a>` : '-';
       return `<tr>
+      <td><input type="checkbox" class="release-check" value="${r.id}" data-status="${r.status}" onchange="updateReleaseBatchBar()"></td>
       <td><a href="#" class="text-link" onclick="loadPage('release-detail',${r.id});return false">${escapeHtml(r.title)}</a></td>
       <td>${escapeHtml(r.deploy_unit_code||'')}</td>
       <td><code style="background:#f4f4f5;padding:2px 6px;border-radius:4px;font-size:12px">${escapeHtml(r.version||'')}</code></td>
@@ -34,7 +42,7 @@ async function renderReleaseList(body, actions) {
       <td>${statusHTML(r.status)}</td>
       <td>${escapeHtml(r.created_by?.username||'')}</td>
       <td>${fmtTime(r.created_at)}</td>
-      <td class="action-group">${r.status==='draft'?'<button class="btn btn-sm btn-primary" onclick="startRelease('+r.id+')">开始发布</button>':''}${r.status==='in_progress'||r.status==='completed'?'<button class="btn btn-sm btn-secondary" onclick="loadPage(\'release-detail\','+r.id+')">查看</button>':''}${r.status==='completed'||r.status==='in_progress'?'<button class="btn btn-sm btn-danger" onclick="rollbackRelease('+r.id+')">回滚</button>':''}${r.status!=='deprecated'&&r.status!=='completed'?'<button class="btn btn-sm btn-warning" onclick="deprecateRelease('+r.id+')">废弃</button>':''}${r.status==='deprecated'?'<button class="btn btn-sm btn-secondary" onclick="loadPage(\'release-detail\','+r.id+')">查看</button>':''}${r.status==='deprecated'&&currentUser?.roles?.some(r=>r.name==='admin')?'<button class="btn btn-sm btn-danger" onclick="deleteRelease('+r.id+')">删除</button>':''}</td>
+      <td class="action-group">${r.status==='draft'?'<button class="btn btn-sm btn-primary" onclick="startRelease('+r.id+')">开始发布</button>':''}${r.status==='in_progress'||r.status==='completed'?'<button class="btn btn-sm btn-secondary" onclick="loadPage(\'release-detail\','+r.id+')">查看</button>':''}${r.status!=='deprecated'&&r.status!=='completed'?'<button class="btn btn-sm btn-warning" onclick="deprecateRelease('+r.id+')">废弃</button>':''}${r.status==='deprecated'?'<button class="btn btn-sm btn-secondary" onclick="loadPage(\'release-detail\','+r.id+')">查看</button>':''}${r.status==='deprecated'&&currentUser?.roles?.some(r=>r.name==='admin')?'<button class="btn btn-sm btn-danger" onclick="deleteRelease('+r.id+')">删除</button>':''}</td>
     </tr>`}).join('')}</tbody></table></div>`;
   } catch(e) { body.innerHTML = '<div class="empty-state"><p>加载失败: '+escapeHtml(e.message)+'</p></div>'; }
 }
@@ -43,15 +51,6 @@ async function startRelease(id) {
   try {
     await api('/releases/'+id+'/start', { method:'POST' });
     toast('发布已启动','success');
-    loadPage('releases');
-  } catch(e) { toast(e.message,'error'); }
-}
-
-async function rollbackRelease(id) {
-  if (!confirm('确认回滚此发布？')) return;
-  try {
-    await api('/releases/'+id+'/rollback', { method:'POST' });
-    toast('已回滚','success');
     loadPage('releases');
   } catch(e) { toast(e.message,'error'); }
 }
@@ -269,7 +268,7 @@ async function renderReleaseDetail(body, id) {
           ${r.deprecated_at?`<div class="release-meta-item"><span>废弃时间</span><span>${fmtTime(r.deprecated_at)}</span></div>`:''}
         </div>
       </div>
-      <div>${r.status==='draft'?'<button class="btn btn-primary" onclick="startRelease('+r.id+')">开始发布</button>':''}${r.status==='in_progress'||r.status==='completed'?'<button class="btn btn-danger" onclick="rollbackRelease('+r.id+')">回滚</button>':''}${r.status!=='deprecated'&&r.status!=='completed'?'<button class="btn btn-warning" onclick="deprecateRelease('+r.id+')">废弃</button>':''}${r.status==='deprecated'&&currentUser?.roles?.some(rl=>rl.name==='admin')?(() => { const days = r.deprecated_at ? Math.max(0, 7 - Math.floor((Date.now() - new Date(r.deprecated_at).getTime()) / 86400000)) : 0; return days > 0 ? '<button class="btn btn-danger" onclick="deleteRelease('+r.id+')">删除（剩余'+days+'天）</button>' : '<button class="btn btn-sm" disabled>删除窗口已过期</button>'; })() : ''}</div>
+      <div>${r.status==='draft'?'<button class="btn btn-primary" onclick="startRelease('+r.id+')">开始发布</button>':''}${r.status!=='deprecated'&&r.status!=='completed'?'<button class="btn btn-warning" onclick="deprecateRelease('+r.id+')">废弃</button>':''}${r.status==='deprecated'&&currentUser?.roles?.some(rl=>rl.name==='admin')?(() => { const days = r.deprecated_at ? Math.max(0, 7 - Math.floor((Date.now() - new Date(r.deprecated_at).getTime()) / 86400000)) : 0; return days > 0 ? '<button class="btn btn-danger" onclick="deleteRelease('+r.id+')">删除（剩余'+days+'天）</button>' : '<button class="btn btn-sm" disabled>删除窗口已过期</button>'; })() : ''}</div>
     </div>
     ${r.status==='deprecated'?`<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:12px 16px;margin-bottom:24px;color:#92400e;font-size:13px">⚠️ 此发布已废弃，所有审批和推进操作已停止。${r.deprecated_at?`废弃时间：${fmtTime(r.deprecated_at)}`:''}</div>`:''}
     ${changesHTML}
@@ -461,10 +460,63 @@ async function showBlueprintModal(blueprintId, releaseId) {
   }
 }
 
+// ===== Batch operations =====
+function getCheckedReleases() {
+  return [...document.querySelectorAll('.release-check:checked')].map(c => ({
+    id: parseInt(c.value),
+    status: c.dataset.status
+  }));
+}
+
+function updateReleaseBatchBar() {
+  const checked = getCheckedReleases();
+  const bar = document.getElementById('release-batch-bar');
+  const countEl = document.getElementById('release-batch-count');
+  if (!bar) return;
+  if (checked.length > 0) {
+    bar.style.display = 'flex';
+    countEl.textContent = `已选 ${checked.length} 项`;
+  } else {
+    bar.style.display = 'none';
+  }
+}
+
+function toggleAllReleases(el) {
+  document.querySelectorAll('.release-check').forEach(c => { c.checked = el.checked; });
+  updateReleaseBatchBar();
+}
+
+async function batchDeprecateReleases() {
+  const checked = getCheckedReleases();
+  const targets = checked.filter(c => c.status !== 'deprecated' && c.status !== 'completed');
+  if (targets.length === 0) { toast('没有可废弃的发布','error'); return; }
+  if (!confirm(`确认废弃 ${targets.length} 个发布？`)) return;
+  let ok = 0, fail = 0;
+  for (const t of targets) {
+    try { await api('/releases/'+t.id+'/deprecate', {method:'POST'}); ok++; }
+    catch(e) { fail++; }
+  }
+  toast(ok > 0 ? `已废弃 ${ok} 个${fail > 0 ? `，失败 ${fail} 个` : ''}` : '废弃失败', ok > 0 ? 'success' : 'error');
+  loadPage('releases');
+}
+
+async function batchDeleteReleases() {
+  const checked = getCheckedReleases();
+  const targets = checked.filter(c => c.status === 'deprecated');
+  if (targets.length === 0) { toast('仅支持删除已废弃的发布','error'); return; }
+  if (!confirm(`确认删除 ${targets.length} 个已废弃的发布？此操作不可恢复！`)) return;
+  let ok = 0, fail = 0;
+  for (const t of targets) {
+    try { await api('/releases/'+t.id, {method:'DELETE'}); ok++; }
+    catch(e) { fail++; }
+  }
+  toast(ok > 0 ? `已删除 ${ok} 个${fail > 0 ? `，失败 ${fail} 个` : ''}` : '删除失败', ok > 0 ? 'success' : 'error');
+  loadPage('releases');
+}
+
 // Expose for inline onclick
 window.renderReleaseList = renderReleaseList;
 window.startRelease = startRelease;
-window.rollbackRelease = rollbackRelease;
 window.deprecateRelease = deprecateRelease;
 window.deleteRelease = deleteRelease;
 window.approveStage = approveStage;
@@ -472,5 +524,9 @@ window.rejectStage = rejectStage;
 window.promoteStage = promoteStage;
 window.retryPush = retryPush;
 window.showBlueprintModal = showBlueprintModal;
+window.toggleAllReleases = toggleAllReleases;
+window.updateReleaseBatchBar = updateReleaseBatchBar;
+window.batchDeprecateReleases = batchDeprecateReleases;
+window.batchDeleteReleases = batchDeleteReleases;
 
 export { renderReleaseList, renderReleaseDetail };

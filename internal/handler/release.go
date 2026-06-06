@@ -155,20 +155,6 @@ func (h *ReleaseHandler) RejectStage(c *gin.Context) {
 	c.JSON(http.StatusOK, release)
 }
 
-func (h *ReleaseHandler) RollbackRelease(c *gin.Context) {
-	id, ok := parseID(c, "id")
-	if !ok {
-		return
-	}
-	userID := c.GetUint("user_id")
-	release, err := h.releaseService.RollbackRelease(id, userID)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, release)
-}
-
 func (h *ReleaseHandler) PromoteToNext(c *gin.Context) {
 	stageID, ok := parseID(c, "stageId")
 	if !ok {
@@ -186,6 +172,16 @@ func (h *ReleaseHandler) PromoteToNext(c *gin.Context) {
 func (h *ReleaseHandler) PendingApprovals(c *gin.Context) {
 	userID := c.GetUint("user_id")
 	stages, err := h.releaseService.GetPendingApprovals(userID)
+	if err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"stages": stages})
+}
+
+func (h *ReleaseHandler) ApprovalHistory(c *gin.Context) {
+	userID := c.GetUint("user_id")
+	stages, err := h.releaseService.GetApprovalHistory(userID)
 	if err != nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
 		return

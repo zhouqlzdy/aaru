@@ -26,6 +26,7 @@ func RegisterRoutes(
 	dmdbClient *service.DMDBClient,
 	releaseService *service.ReleaseService,
 	bpService *service.BlueprintService,
+	notifService *service.NotificationService,
 	mockUsers []string,
 	webFS fs.FS,
 ) {
@@ -35,6 +36,7 @@ func RegisterRoutes(
 	releaseHandler := NewReleaseHandler(releaseService)
 	adminHandler := NewAdminHandler(store, authService)
 	bpHandler := NewBlueprintHandler(bpService, store)
+	notifHandler := NewNotificationHandler(notifService, store)
 
 	// 模板：从 embed.FS 加载
 	tmpl := template.Must(template.New("").Funcs(template.FuncMap{
@@ -88,7 +90,6 @@ func RegisterRoutes(
 		api.GET("/releases", releaseHandler.ListReleases)
 		api.GET("/releases/:id", releaseHandler.GetRelease)
 		api.POST("/releases/:id/start", releaseHandler.StartRelease)
-		api.POST("/releases/:id/rollback", releaseHandler.RollbackRelease)
 		api.POST("/releases/:id/deprecate", releaseHandler.DeprecateRelease)
 		api.DELETE("/releases/:id", releaseHandler.DeleteRelease)
 
@@ -100,11 +101,13 @@ func RegisterRoutes(
 
 		// 审批
 		api.GET("/approvals/pending", releaseHandler.PendingApprovals)
+		api.GET("/approvals/history", releaseHandler.ApprovalHistory)
 
 		// 晋级蓝图
 		api.GET("/blueprints", bpHandler.List)
 		api.POST("/blueprints", bpHandler.Create)
 		api.GET("/blueprints/:id", bpHandler.Get)
+		api.GET("/blueprints/:id/active-releases", bpHandler.ActiveReleases)
 		api.PUT("/blueprints/:id", bpHandler.Update)
 		api.DELETE("/blueprints/:id", bpHandler.Delete)
 
@@ -117,6 +120,10 @@ func RegisterRoutes(
 		api.PUT("/admin/users/:userId/roles", adminHandler.SetUserRoles)
 		api.PUT("/admin/users/:userId/access", adminHandler.UpdateUserAccess)
 		api.PUT("/admin/roles/:roleId/permissions", adminHandler.SetRolePermissions)
+
+		// 通知配置
+		api.GET("/admin/notification-config", notifHandler.GetConfig)
+		api.PUT("/admin/notification-config", notifHandler.SaveConfig)
 	}
 
 	r.GET("/", func(c *gin.Context) {

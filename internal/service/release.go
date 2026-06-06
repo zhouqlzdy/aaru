@@ -19,10 +19,22 @@ type ReleaseService struct {
 	dmdb      *DMDBClient
 	permSvc   *PermissionService
 	bpService *BlueprintService
+	notifSvc  *NotificationService
 }
 
 func NewReleaseService(s *store.DBStore, d *DMDBClient, p *PermissionService, bp *BlueprintService) *ReleaseService {
 	return &ReleaseService{store: s, dmdb: d, permSvc: p, bpService: bp}
+}
+
+func (r *ReleaseService) SetNotificationService(n *NotificationService) {
+	r.notifSvc = n
+}
+
+// notifyStageActivated 发送 stage 激活通知（异步，不阻塞主流程）
+func (r *ReleaseService) notifyStageActivated(release *model.Release, stage *model.ReleaseStage) {
+	if r.notifSvc != nil {
+		go r.notifSvc.NotifyStageActivated(release, stage)
+	}
 }
 
 // reloadRelease 重新加载 release（含 stages），用于操作后刷新数据。
@@ -297,6 +309,7 @@ func (r *ReleaseService) StartRelease(releaseID, userID uint) (*model.Release, e
 					if err := r.store.DB().Save(&release.Stages[i]).Error; err != nil {
 						log.Printf("save stage %d: %v", release.Stages[i].ID, err)
 					}
+					r.notifyStageActivated(release, &release.Stages[i])
 					r.autoProgress(releaseID, release.Stages[i].ID)
 				}
 			}
@@ -451,6 +464,7 @@ func (r *ReleaseService) activateChildren(releaseID uint, nodeID uint) {
 					release.Stages[j].Status == "pending" {
 					release.Stages[j].Status = "in_progress"
 					r.store.DB().Save(&release.Stages[j])
+					r.notifyStageActivated(release, &release.Stages[j])
 					r.autoProgress(releaseID, release.Stages[j].ID)
 				}
 			}
@@ -560,30 +574,6 @@ func (r *ReleaseService) RejectStage(stageID, userID uint, comment string) (*mod
 	return release, nil
 }
 
-func (r *ReleaseService) RollbackRelease(releaseID, userID uint) (*model.Release, error) {
-	if !r.permSvc.CanAction(userID, "manage") {
-		return nil, fmt.Errorf("permission denied")
-	}
-	release, err := r.store.GetReleaseWithStages(releaseID)
-	if err != nil {
-		return nil, fmt.Errorf("get release: %w", err)
-	}
-	if release.Status != "completed" && release.Status != "in_progress" {
-		return nil, fmt.Errorf("cannot rollback status: %s", release.Status)
-	}
-	release.Status = "rolled_back"
-	for i := range release.Stages {
-		if release.Stages[i].Status == "in_progress" || release.Stages[i].Status == "pushing" {
-			release.Stages[i].Status = "skipped"
-			r.store.DB().Save(&release.Stages[i])
-		}
-	}
-	if err := r.store.DB().Save(release).Error; err != nil {
-		return nil, fmt.Errorf("save release: %w", err)
-	}
-	return release, nil
-}
-
 func (r *ReleaseService) PromoteToNext(stageID, userID uint) (*model.Release, error) {
 	var stage model.ReleaseStage
 	if err := r.store.DB().First(&stage, stageID).Error; err != nil {
@@ -632,6 +622,7 @@ func (r *ReleaseService) PromoteToNext(stageID, userID uint) (*model.Release, er
 	if err := r.store.DB().Save(&stage).Error; err != nil {
 		return nil, fmt.Errorf("save stage: %w", err)
 	}
+	r.notifyStageActivated(release, &stage)
 	r.autoProgress(release.ID, stage.ID)
 
 	r.reloadRelease(release)
@@ -720,6 +711,13 @@ func (r *ReleaseService) GetPendingApprovals(userID uint) ([]model.ReleaseStage,
 		}
 	}
 	return filtered, nil
+}
+
+func (r *ReleaseService) GetApprovalHistory(userID uint) ([]model.ReleaseStage, error) {
+	if !r.permSvc.CanAction(userID, "approve") {
+		return nil, fmt.Errorf("permission denied")
+	}
+	return r.store.GetApprovalHistoryByUser(userID)
 }
 
 // DeprecateRelease 废弃发布：不允许再审批，废弃后一周内可删除
@@ -848,6 +846,7 @@ func (r *ReleaseService) WebhookPromote(stageID uint, token string) (*model.Rele
 	if err := r.store.DB().Save(&stage).Error; err != nil {
 		return nil, fmt.Errorf("save stage: %w", err)
 	}
+	r.notifyStageActivated(release, &stage)
 	r.autoProgress(release.ID, stage.ID)
 
 	r.reloadRelease(release)

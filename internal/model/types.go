@@ -53,10 +53,8 @@ type BlueprintNode struct {
 	EnvName       string    `gorm:"size:128" json:"env_name"`
 	PositionX     int       `json:"pos_x"`
 	PositionY     int       `json:"pos_y"`
-	GateType      string    `gorm:"size:32;default:manual" json:"gate_type"` // manual, api_hook, auto
-	ApproveRoleID *uint     `json:"approve_role_id,omitempty"`
-	ApproveRole   *Role     `gorm:"foreignKey:ApproveRoleID" json:"approve_role,omitempty"`
-	WebhookToken  string    `gorm:"size:64" json:"webhook_token,omitempty"` // 系统自动生成
+	GateType     string `gorm:"size:32;default:manual" json:"gate_type"` // manual, api_hook, auto
+	WebhookToken string `gorm:"size:64" json:"webhook_token,omitempty"` // 系统自动生成
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }

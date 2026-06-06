@@ -3,6 +3,8 @@ import { toast, showLoading, escapeHtml, setPage } from '../utils.js';
 
 // ===== Blueprint Management =====
 let dagState = { nodes: [], edges: [], nextId: 100, selectedNode: null, selectedEdge: null };
+let originalNodeIDs = new Set();  // 编辑时记录原始节点 ID 集合
+let originalEdgeKeys = new Set(); // 编辑时记录原始边 key 集合
 
 async function loadPageBlueprintList(body) {
   if (!body) body = document.getElementById('content-body');
@@ -34,12 +36,10 @@ async function loadPageBlueprintEditor(bpId) {
   }
 
   // Load envs for node selector
-  let envs = [];
-  try { const d = await api('/environments'); envs = d.envs||[]; } catch(e) {}
+  try { const d = await api('/environments'); envCache = d.envs||[]; } catch(e) {}
 
   // Load roles for gate config
-  let roles = [];
-  try { const d = await api('/admin/roles'); roles = d.roles||[]; } catch(e) {}
+  try { const d = await api('/admin/roles'); roleCache = d.roles||[]; } catch(e) {}
 
   setPage('blueprints', bpId ? '编辑蓝图: '+escapeHtml(bp?.name||'') : '新建蓝图', '基于DAG的环境晋级策略编辑器');
   actions.innerHTML = `
@@ -48,11 +48,16 @@ async function loadPageBlueprintEditor(bpId) {
 
   // Init DAG state
   if (bp) {
-    dagState.nodes = (bp.nodes||[]).map(n=> ({...n, id:n.id, env_code:n.env_code, env_name:n.env_name||n.env_code, pos_x:n.pos_x, pos_y:n.pos_y, gate_type:n.gate_type||'manual', approve_role_id:n.approve_role_id, webhook_token:n.webhook_token||''}));
+    dagState.nodes = (bp.nodes||[]).map(n=> ({...n, id:n.id, env_code:n.env_code, env_name:n.env_name||n.env_code, pos_x:n.pos_x, pos_y:n.pos_y, gate_type:n.gate_type||'manual', webhook_token:n.webhook_token||''}));
     dagState.edges = (bp.edges||[]).map(e=>({...e, id:e.id, from_node_id:e.from_node_id, to_node_id:e.to_node_id}));
     dagState.nextId = Math.max(100, ...dagState.nodes.map(n=>n.id)) + 1;
+    // 记录原始结构，用于保存时检测变化
+    originalNodeIDs = new Set(dagState.nodes.map(n=>n.id));
+    originalEdgeKeys = new Set(dagState.edges.map(e=>`${e.from_node_id}->${e.to_node_id}`));
   } else {
     dagState = { nodes: [], edges: [], nextId: 100, selectedNode: null, selectedEdge: null };
+    originalNodeIDs = new Set();
+    originalEdgeKeys = new Set();
   }
 
   body.innerHTML = `<div style="display:grid;grid-template-columns:1fr 300px;gap:16px;height:calc(100vh - 140px)">
@@ -189,7 +194,7 @@ function updateNodeConfig() {
       <option value="auto" ${n.gate_type==='auto'?'selected':''}>无条件晋级</option>
       <option value="api_hook" ${n.gate_type==='api_hook'?'selected':''}>API Hook（外部系统回调）</option>
     </select></div>
-    ${n.gate_type==='manual'?`<div class="form-group"><label class="form-label">审批角色（自动创建）</label><code style="display:block;padding:8px;background:#f0fdf4;border-radius:4px;font-size:12px">approver-${escapeHtml(n.env_code||'??')}</code><span style="font-size:11px;color:var(--text-muted)">角色将自动创建并拥有approve权限。在权限管理页面为此角色添加用户。</span></div>`:''}${n.gate_type==='auto'?`<div class="form-group"><span style="font-size:12px;color:#059669">该阶段父环境审批通过后自动晋级，无需人工干预。</span></div>`:''}
+    ${n.gate_type==='manual'?`<div class="form-group"><span style="font-size:12px;color:var(--text-muted)">需要用户拥有 approve 权限，且 allowed_silos 包含该发布单所属 silo，allowed_envs 包含此环境。</span></div>`:''}${n.gate_type==='auto'?`<div class="form-group"><span style="font-size:12px;color:#059669">该阶段父环境审批通过后自动晋级，无需人工干预。</span></div>`:''}
     ${n.gate_type==='api_hook'?`<div class="form-group"><label class="form-label">Webhook URL（外部系统调用此地址晋级）</label><code style="display:block;padding:8px;background:#f5f5f4;border-radius:4px;font-size:11px;word-break:break-all;margin-bottom:8px">${webhookUrl}</code><span style="font-size:11px;color:var(--text-muted)">发布启动后，将 __STAGE_ID__ 替换为实际的stage id。外部系统调用此URL即可自动将该阶段从pending推进到in_progress。</span></div>`:''}
     <button class="btn btn-danger btn-sm" onclick="deleteDagNode(${n.id})" style="margin-top:8px">删除此节点</button>`;
 }
@@ -210,7 +215,7 @@ window.updateNodeProp = function(key, val) {
 };
 
 window.addDagNode = function() {
-  const n = { id: dagState.nextId++, env_code: '', env_name: '新节点', pos_x: dagState.nodes.length*110+30, pos_y: dagState.nodes.length*45+50, gate_type: 'manual', approve_role_id: null, webhook_token: '' };
+  const n = { id: dagState.nextId++, env_code: '', env_name: '新节点', pos_x: dagState.nodes.length*110+30, pos_y: dagState.nodes.length*45+50, gate_type: 'manual', webhook_token: '' };
   dagState.nodes.push(n);
   dagState.selectedNode = n.id;
   renderDAG();
@@ -346,7 +351,18 @@ function setupDAGMouse() {
 }
 
 window.deleteBlueprint = async function(id) {
-  if (!confirm('确认删除此蓝图？')) return;
+  try {
+    const ar = await api('/blueprints/'+id+'/active-releases');
+    const activeReleases = ar.releases || [];
+    if (activeReleases.length > 0) {
+      const list = activeReleases.map(r => `#${r.id} ${escapeHtml(r.title)} (${escapeHtml(r.status)})`).join('\n');
+      if (!confirm(`⚠️ 该蓝图有 ${activeReleases.length} 个在途发布，删除蓝图不会废弃这些发布：\n\n${list}\n\n是否继续删除？`)) return;
+    } else {
+      if (!confirm('确认删除此蓝图？')) return;
+    }
+  } catch(e) {
+    if (!confirm('确认删除此蓝图？')) return;
+  }
   try { await api('/blueprints/'+id, {method:'DELETE'}); toast('已删除'); loadPageBlueprintList(); }
   catch(e) { toast(e.message,'error'); }
 };
@@ -354,16 +370,45 @@ window.deleteBlueprint = async function(id) {
 window.saveBlueprint = async function(id) {
   const name = document.getElementById('bp-name').value.trim();
   if (!name) { toast('请输入蓝图名称','error'); return; }
+
+  // 编辑已有蓝图时，检测结构是否变化
+  if (id) {
+    const curNodeIDs = new Set(dagState.nodes.map(n=>n.id));
+    const curEdgeKeys = new Set(dagState.edges.map(e=>`${e.from_node_id}->${e.to_node_id}`));
+    const structureChanged =
+      curNodeIDs.size !== originalNodeIDs.size ||
+      curEdgeKeys.size !== originalEdgeKeys.size ||
+      [...curNodeIDs].some(id => !originalNodeIDs.has(id)) ||
+      [...curEdgeKeys].some(k => !originalEdgeKeys.has(k));
+
+    if (structureChanged) {
+      // 结构有变化，检查是否有在途发布需要废弃
+      try {
+        const ar = await api('/blueprints/'+id+'/active-releases');
+        const active = ar.releases || [];
+        if (active.length > 0) {
+          const list = active.map(r => `  #${r.id} ${r.title} (${r.status})`).join('\n');
+          if (!confirm(`⚠️ 蓝图结构已调整，保存将废弃以下 ${active.length} 个在途发布：\n\n${list}\n\n是否继续保存？`)) return;
+        }
+      } catch(e) {}
+    }
+  }
+
   const payload = {
     name,
     description: document.getElementById('bp-desc').value.trim(),
-    nodes: dagState.nodes.map(n=>({ id:n.id, env_code:n.env_code, env_name:n.env_name, pos_x:n.pos_x, pos_y:n.pos_y, gate_type:n.gate_type, approve_role_id:n.approve_role_id||null, webhook_token:n.webhook_token||'' })),
+    nodes: dagState.nodes.map(n=>({ id:n.id, env_code:n.env_code, env_name:n.env_name, pos_x:n.pos_x, pos_y:n.pos_y, gate_type:n.gate_type, webhook_token:n.webhook_token||'' })),
     edges: dagState.edges.map(e=>({ from_node_id:e.from_node_id, to_node_id:e.to_node_id }))
   };
   try {
-    if (id) await api('/blueprints/'+id, {method:'PUT',body:JSON.stringify(payload)});
-    else await api('/blueprints', {method:'POST',body:JSON.stringify(payload)});
-    toast('蓝图已保存','success');
+    let resp;
+    if (id) resp = await api('/blueprints/'+id, {method:'PUT',body:JSON.stringify(payload)});
+    else resp = await api('/blueprints', {method:'POST',body:JSON.stringify(payload)});
+    if (resp?.deprecated_count > 0) {
+      toast(`蓝图已保存，${resp.deprecated_count} 个在途发布已废弃`,'info');
+    } else if (!id) {
+      toast('蓝图已创建','success');
+    }
     loadPageBlueprintList();
   } catch(e) { toast(e.message,'error'); }
 };

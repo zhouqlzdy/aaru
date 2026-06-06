@@ -33,13 +33,15 @@ func main() {
 	dmdbClient := service.NewDMDBClient(config.DMDB.ServerAddress, config.DevOps.ServerAddress, config.DMDB.Token)
 	permService := service.NewPermissionService(dbStore)
 	bpService := service.NewBlueprintService(dbStore)
+	notifService := service.NewNotificationService(dbStore, permService)
 	releaseService := service.NewReleaseService(dbStore, dmdbClient, permService, bpService)
+	releaseService.SetNotificationService(notifService)
 
 	initDefaults(dbStore)
 
 	r := gin.Default()
 	setupCORS(r)
-	handler.RegisterRoutes(r, dbStore, authService, dmdbClient, releaseService, bpService, config.Gitlab.Users, aaru.WebFS)
+	handler.RegisterRoutes(r, dbStore, authService, dmdbClient, releaseService, bpService, notifService, config.Gitlab.Users, aaru.WebFS)
 
 	startServer(r, config.ServerHost)
 }
@@ -57,8 +59,6 @@ func initDefaults(dbStore *store.DBStore) {
 		}
 		// 为 admin 用户补充 allowed_silos="*"
 		dbStore.SetAdminWildcard()
-		// 清理废弃的 approver-* 环境审批角色
-		dbStore.CleanupApproverRoles()
 		return
 	}
 	adminRole := &model.Role{Name: "admin", Description: "管理员，拥有所有权限"}

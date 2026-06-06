@@ -3,6 +3,7 @@ package store
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"aaru/internal/model"
 	"gorm.io/driver/mysql"
@@ -36,6 +37,7 @@ func NewDBStore(dsn string) (*DBStore, error) {
 		&model.User{}, &model.Role{}, &model.Permission{},
 		&model.Release{}, &model.ReleaseStage{},
 		&model.PromotionBlueprint{}, &model.BlueprintNode{}, &model.BlueprintEdge{},
+		&model.NotificationConfig{},
 	); err != nil {
 		return nil, err
 	}
@@ -127,18 +129,6 @@ func (s *DBStore) SetAdminWildcard() {
 	)`)
 }
 
-// CleanupApproverRoles 清理废弃的 approver-* 环境审批角色
-func (s *DBStore) CleanupApproverRoles() {
-	// 解除蓝图节点对 approver 角色的引用
-	s.db.Exec(`UPDATE blueprint_nodes SET approve_role_id = NULL WHERE approve_role_id IN (SELECT id FROM roles WHERE name LIKE 'approver-%')`)
-	// 解除用户与 approver 角色的关联
-	s.db.Exec(`DELETE FROM user_roles WHERE role_id IN (SELECT id FROM roles WHERE name LIKE 'approver-%')`)
-	// 删除 approver 角色的权限
-	s.db.Exec(`DELETE FROM permissions WHERE role_id IN (SELECT id FROM roles WHERE name LIKE 'approver-%')`)
-	// 删除 approver 角色
-	s.db.Exec(`DELETE FROM roles WHERE name LIKE 'approver-%'`)
-}
-
 // ========== Role ==========
 func (s *DBStore) CreateRole(r *model.Role) error { return s.db.Create(r).Error }
 func (s *DBStore) ListRoles() ([]model.Role, error) {
@@ -216,6 +206,33 @@ func (s *DBStore) GetStagesByStatus(status string) ([]model.ReleaseStage, error)
 	err := s.db.Where("status = ?", status).Preload("ApprovedBy").Preload("Release").Find(&stages).Error
 	return stages, err
 }
+func (s *DBStore) GetApprovalHistoryByUser(userID uint) ([]model.ReleaseStage, error) {
+	var stages []model.ReleaseStage
+	err := s.db.Where("approved_by_id = ?", userID).Preload("ApprovedBy").Preload("Release").Order("approved_at DESC").Find(&stages).Error
+	return stages, err
+}
+func (s *DBStore) GetActiveReleasesByBlueprint(bpID uint) ([]model.Release, error) {
+	var releases []model.Release
+	err := s.db.Where("blueprint_id = ? AND status IN (?)", bpID, []string{"draft", "in_progress"}).Find(&releases).Error
+	return releases, err
+}
+func (s *DBStore) DeprecateReleasesByBlueprint(bpID uint) error {
+	now := time.Now()
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		// 将 in_progress/pending 的 stage 标记为 skipped
+		if err := tx.Model(&model.ReleaseStage{}).
+			Where("release_id IN (?) AND status IN (?)",
+				tx.Model(&model.Release{}).Select("id").Where("blueprint_id = ? AND status = ?", bpID, "in_progress"),
+				[]string{"in_progress", "pending"}).
+			Updates(map[string]interface{}{"status": "skipped"}).Error; err != nil {
+			return err
+		}
+		// 废弃 draft 和 in_progress 的发布
+		return tx.Model(&model.Release{}).
+			Where("blueprint_id = ? AND status IN (?)", bpID, []string{"draft", "in_progress"}).
+			Updates(map[string]interface{}{"status": "deprecated", "deprecated_at": now}).Error
+	})
+}
 
 func (s *DBStore) DeleteRelease(id uint) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
@@ -243,6 +260,10 @@ func (s *DBStore) ListBlueprints() ([]model.PromotionBlueprint, error) {
 }
 func (s *DBStore) DeleteBlueprint(id uint) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		// 解除发布单对蓝图的引用
+		if err := tx.Model(&model.Release{}).Where("blueprint_id = ?", id).Update("blueprint_id", nil).Error; err != nil {
+			return err
+		}
 		if err := tx.Where("blueprint_id = ?", id).Delete(&model.BlueprintEdge{}).Error; err != nil {
 			return err
 		}
@@ -260,6 +281,12 @@ func (s *DBStore) DeleteBlueprint(id uint) error {
 func (s *DBStore) CreateNode(node *model.BlueprintNode) error {
 	return s.db.Create(node).Error
 }
+func (s *DBStore) SaveNode(node *model.BlueprintNode) error {
+	return s.db.Save(node).Error
+}
+func (s *DBStore) DeleteNode(id uint) error {
+	return s.db.Delete(&model.BlueprintNode{}, id).Error
+}
 func (s *DBStore) DeleteNodesByBlueprint(bpID uint) error {
 	return s.db.Where("blueprint_id = ?", bpID).Delete(&model.BlueprintNode{}).Error
 }
@@ -276,6 +303,9 @@ func (s *DBStore) CreateEdges(edges []model.BlueprintEdge) error {
 	}
 	return s.db.Create(&edges).Error
 }
+func (s *DBStore) DeleteEdge(id uint) error {
+	return s.db.Delete(&model.BlueprintEdge{}, id).Error
+}
 func (s *DBStore) DeleteEdgesByBlueprint(bpID uint) error {
 	return s.db.Where("blueprint_id = ?", bpID).Delete(&model.BlueprintEdge{}).Error
 }
@@ -283,4 +313,27 @@ func (s *DBStore) GetBlueprintEdges(bpID uint) ([]model.BlueprintEdge, error) {
 	var edges []model.BlueprintEdge
 	err := s.db.Where("blueprint_id = ?", bpID).Find(&edges).Error
 	return edges, err
+}
+
+// ========== Notification Config ==========
+func (s *DBStore) GetNotificationConfig() (*model.NotificationConfig, error) {
+	var cfg model.NotificationConfig
+	err := s.db.First(&cfg).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			// 返回默认空配置
+			return &model.NotificationConfig{EnvWebhooks: map[string]string{}}, nil
+		}
+		return nil, err
+	}
+	if cfg.EnvWebhooks == nil {
+		cfg.EnvWebhooks = map[string]string{}
+	}
+	return &cfg, nil
+}
+func (s *DBStore) SaveNotificationConfig(cfg *model.NotificationConfig) error {
+	if cfg.ID == 0 {
+		cfg.ID = 1
+	}
+	return s.db.Save(cfg).Error
 }

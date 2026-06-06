@@ -31,14 +31,6 @@ func (h *BlueprintHandler) fullResponse(bpID uint) gin.H {
 	if edges == nil {
 		edges = []model.BlueprintEdge{}
 	}
-	for i := range nodes {
-		if nodes[i].ApproveRoleID != nil {
-			role, err := h.store.GetRole(*nodes[i].ApproveRoleID)
-			if err == nil {
-				nodes[i].ApproveRole = role
-			}
-		}
-	}
 	return gin.H{
 		"id": bp.ID, "name": bp.Name, "description": bp.Description,
 		"nodes": nodes, "edges": edges,
@@ -94,12 +86,16 @@ func (h *BlueprintHandler) Update(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	_, err := h.bpService.Update(id, &in)
+	_, deprecatedCount, err := h.bpService.Update(id, &in)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, h.fullResponse(id))
+	resp := h.fullResponse(id)
+	if deprecatedCount > 0 {
+		resp["deprecated_count"] = deprecatedCount
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 func (h *BlueprintHandler) Delete(c *gin.Context) {
@@ -115,4 +111,17 @@ func (h *BlueprintHandler) Delete(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "ok"})
+}
+
+func (h *BlueprintHandler) ActiveReleases(c *gin.Context) {
+	id, ok := parseID(c, "id")
+	if !ok {
+		return
+	}
+	releases, err := h.bpService.GetActiveReleases(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"releases": releases})
 }

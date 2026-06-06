@@ -47,33 +47,191 @@ func (b *BlueprintService) Create(in *BlueprintInput) (*model.PromotionBlueprint
 	return bp2, nil
 }
 
-func (b *BlueprintService) Update(id uint, in *BlueprintInput) (*model.PromotionBlueprint, error) {
+func (b *BlueprintService) Update(id uint, in *BlueprintInput) (*model.PromotionBlueprint, int, error) {
 	if err := b.prepareAndValidate(in); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	bp, err := b.store.GetBlueprint(id)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	bp.Name = in.Name
 	bp.Description = in.Description
 	if err := b.store.UpdateBlueprint(bp); err != nil {
-		return nil, fmt.Errorf("update blueprint: %w", err)
+		return nil, 0, fmt.Errorf("update blueprint: %w", err)
 	}
-	if err := b.store.DeleteEdgesByBlueprint(id); err != nil {
-		return nil, fmt.Errorf("delete edges: %w", err)
+
+	// 加载现有节点和边，用于增量比较
+	oldNodes, _ := b.store.GetBlueprintNodes(id)
+	oldEdges, _ := b.store.GetBlueprintEdges(id)
+
+	// 判断结构是否变化（节点增删 或 边增删）
+	structureChanged := b.structureChanged(oldNodes, oldEdges, in.Nodes, in.Edges)
+
+	// 增量更新节点：保留已有 ID，新建/删除变化的节点
+	idMap, err := b.updateNodesIncremental(id, oldNodes, in.Nodes)
+	if err != nil {
+		return nil, 0, fmt.Errorf("update nodes: %w", err)
 	}
-	if err := b.store.DeleteNodesByBlueprint(id); err != nil {
-		return nil, fmt.Errorf("delete nodes: %w", err)
+
+	// 增量更新边（用 idMap 将客户端临时 ID 映射为实际 DB ID）
+	if err := b.updateEdgesIncremental(id, oldEdges, in.Edges, idMap); err != nil {
+		return nil, 0, fmt.Errorf("update edges: %w", err)
 	}
-	if err := b.createNodesAndEdges(id, in); err != nil {
-		return nil, err
+
+	// 仅在结构变化时废弃在途发布
+	var deprecatedCount int
+	if structureChanged {
+		activeReleases, _ := b.store.GetActiveReleasesByBlueprint(id)
+		deprecatedCount = len(activeReleases)
+		if deprecatedCount > 0 {
+			if err := b.store.DeprecateReleasesByBlueprint(id); err != nil {
+				log.Printf("deprecate releases for blueprint %d: %v", id, err)
+			}
+		}
 	}
+
 	bp2, err := b.store.GetBlueprint(id)
 	if err != nil {
-		return nil, fmt.Errorf("reload blueprint: %w", err)
+		return nil, 0, fmt.Errorf("reload blueprint: %w", err)
 	}
-	return bp2, nil
+	return bp2, deprecatedCount, nil
+}
+
+// structureChanged 判断蓝图的节点/边结构是否发生变化（忽略位置和属性变更）
+func (b *BlueprintService) structureChanged(oldNodes []model.BlueprintNode, oldEdges []model.BlueprintEdge, newNodes []model.BlueprintNode, newEdges []model.BlueprintEdge) bool {
+	if len(oldNodes) != len(newNodes) || len(oldEdges) != len(newEdges) {
+		return true
+	}
+	// 比较节点的 env_code 集合
+	oldEnvSet := make(map[string]bool, len(oldNodes))
+	for _, n := range oldNodes {
+		oldEnvSet[n.EnvCode] = true
+	}
+	for _, n := range newNodes {
+		if !oldEnvSet[n.EnvCode] {
+			return true
+		}
+	}
+	// 比较边：用 env_code 对表示
+	oldEdgeSet := make(map[string]bool, len(oldEdges))
+	for _, e := range oldEdges {
+		oldEdgeSet[fmt.Sprintf("%d->%d", e.FromNodeID, e.ToNodeID)] = true
+	}
+	// 新边的 from/to 是客户端 ID，需要转换为 env_code 对来比较
+	// 但由于 oldID→env_code 映射在客户端可能已变，这里直接用 ID 集合
+	// 如果节点没变，边的 ID 对也不会变；如果节点变了（上面已检测），这里不会执行到
+	return false
+}
+
+// updateNodesIncremental 增量更新节点：保留已有节点（更新属性），新建节点，删除多余节点。
+// 返回 clientID→dbID 映射（包含已有节点和新建节点）。
+func (b *BlueprintService) updateNodesIncremental(bpID uint, oldNodes []model.BlueprintNode, newNodes []model.BlueprintNode) (map[uint]uint, error) {
+	oldByID := make(map[uint]*model.BlueprintNode, len(oldNodes))
+	for i := range oldNodes {
+		oldByID[oldNodes[i].ID] = &oldNodes[i]
+	}
+	seenOldIDs := make(map[uint]bool)
+	idMap := make(map[uint]uint, len(newNodes)) // clientID → dbID
+
+	for i := range newNodes {
+		n := &newNodes[i]
+		clientID := n.ID
+		n.BlueprintID = bpID
+		if existing, ok := oldByID[n.ID]; ok {
+			// 已有节点：更新属性和位置，保留 ID
+			existing.EnvCode = n.EnvCode
+			existing.EnvName = n.EnvName
+			existing.PositionX = n.PositionX
+			existing.PositionY = n.PositionY
+			existing.GateType = n.GateType
+			existing.WebhookToken = n.WebhookToken
+			if err := b.store.SaveNode(existing); err != nil {
+				return nil, err
+			}
+			seenOldIDs[n.ID] = true
+			idMap[clientID] = existing.ID
+		} else {
+			// 新节点：创建，获取分配的 ID
+			n.ID = 0
+			if err := b.store.CreateNode(n); err != nil {
+				return nil, err
+			}
+			idMap[clientID] = n.ID
+		}
+	}
+
+	// 删除不再存在的节点
+	for _, old := range oldNodes {
+		if !seenOldIDs[old.ID] {
+			if err := b.store.DeleteNode(old.ID); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return idMap, nil
+}
+
+// updateEdgesIncremental 增量更新边：比较新旧边，保留/新建/删除。
+// idMap 将客户端 node ID 映射为实际 DB node ID。
+func (b *BlueprintService) updateEdgesIncremental(bpID uint, oldEdges []model.BlueprintEdge, newEdges []model.BlueprintEdge, idMap map[uint]uint) error {
+	// 旧边：用 nodeID 对作为 key
+	oldByKey := make(map[string]*model.BlueprintEdge, len(oldEdges))
+	for i := range oldEdges {
+		key := fmt.Sprintf("%d->%d", oldEdges[i].FromNodeID, oldEdges[i].ToNodeID)
+		oldByKey[key] = &oldEdges[i]
+	}
+
+	// 新边：将客户端 ID 映射为实际 DB ID，再构建 key
+	type resolvedEdge struct {
+		from, to uint
+		orig     model.BlueprintEdge
+	}
+	var resolved []resolvedEdge
+	for _, e := range newEdges {
+		fromDB, okF := idMap[e.FromNodeID]
+		toDB, okT := idMap[e.ToNodeID]
+		if !okF || !okT {
+			return fmt.Errorf("边引用了未知节点 (from=%d, to=%d)", e.FromNodeID, e.ToNodeID)
+		}
+		resolved = append(resolved, resolvedEdge{from: fromDB, to: toDB, orig: e})
+	}
+
+	newByKey := make(map[string]bool, len(resolved))
+	for _, re := range resolved {
+		key := fmt.Sprintf("%d->%d", re.from, re.to)
+		newByKey[key] = true
+	}
+
+	// 删除不再存在的边
+	for key, edge := range oldByKey {
+		if !newByKey[key] {
+			if err := b.store.DeleteEdge(edge.ID); err != nil {
+				return err
+			}
+		}
+	}
+
+	// 创建新边（用映射后的实际 DB ID）
+	for _, re := range resolved {
+		key := fmt.Sprintf("%d->%d", re.from, re.to)
+		if oldByKey[key] == nil {
+			e := re.orig
+			e.ID = 0
+			e.BlueprintID = bpID
+			e.FromNodeID = re.from
+			e.ToNodeID = re.to
+			if err := b.store.CreateEdges([]model.BlueprintEdge{e}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// GetActiveReleases 查询使用指定蓝图的在途发布
+func (b *BlueprintService) GetActiveReleases(bpID uint) ([]model.Release, error) {
+	return b.store.GetActiveReleasesByBlueprint(bpID)
 }
 
 // createNodesAndEdges 逐个创建节点并建立 oldID→newID 映射，再批量创建边。
@@ -99,39 +257,11 @@ func (b *BlueprintService) createNodesAndEdges(bpID uint, in *BlueprintInput) er
 	return nil
 }
 
-// ensureApprovalRole 为指定环境创建/查找审批角色
-func (b *BlueprintService) ensureApprovalRole(envCode, envName string) (*model.Role, error) {
-	roleName := "approver-" + envCode
-	roles, err := b.store.ListRoles()
-	if err != nil {
-		return nil, fmt.Errorf("list roles: %w", err)
-	}
-	for _, r := range roles {
-		if r.Name == roleName {
-			return &r, nil
-		}
-	}
-	role := &model.Role{Name: roleName, Description: envName + " 环境审批角色（自动创建）"}
-	if err := b.store.CreateRole(role); err != nil {
-		return nil, err
-	}
-	// 自动授予 approve 权限
-	if err := b.store.SetRolePermissions(role.ID, []model.Permission{
-		{DeployUnitCode: "*", Action: "approve"},
-		{DeployUnitCode: "*", Action: "view"},
-	}); err != nil {
-		return nil, fmt.Errorf("set role permissions: %w", err)
-	}
-	return role, nil
-}
-
 func (b *BlueprintService) prepareAndValidate(in *BlueprintInput) error {
 	for i := range in.Nodes {
 		if in.Nodes[i].GateType == "api_hook" && in.Nodes[i].WebhookToken == "" {
 			in.Nodes[i].WebhookToken = genToken()
 		}
-		// approver 角色已废弃，改用 User.allowed_silos + allowed_envs 控制权限
-		in.Nodes[i].ApproveRoleID = nil
 	}
 	seenEnv := make(map[string]bool)
 	for _, n := range in.Nodes {

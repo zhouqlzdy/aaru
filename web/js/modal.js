@@ -33,16 +33,17 @@ function showDiffModal(fieldName, snapshots) {
     return envOpts.map(o => `<option value="${o.idx}" ${o.idx===selectedIdx?'selected':''}>${escapeHtml(o.label)}</option>`).join('');
   }
 
-  // 根据左侧环境，生成右侧下拉框选项（带差异描述）
+  // 根据左侧环境，生成右侧下拉框选项（只显示有差异的环境）
   function rightEnvOptions(leftIdx, selectedIdx) {
-    return envOpts.map(o => {
-      if (o.idx === leftIdx) {
-        return `<option value="${o.idx}" disabled>${escapeHtml(o.label)} (当前)</option>`;
-      }
-      const same = formatted[o.idx] === formatted[leftIdx];
-      const tag = same ? '无差异' : '有差异';
-      return `<option value="${o.idx}" ${o.idx===selectedIdx?'selected':''}>${escapeHtml(o.label)} — ${tag}</option>`;
-    }).join('');
+    const opts = envOpts.filter(o => {
+      if (o.idx === leftIdx) return false;
+      return formatted[o.idx] !== formatted[leftIdx];
+    });
+    if (opts.length === 0) return '';
+    const sel = opts.some(o => o.idx === selectedIdx) ? selectedIdx : opts[0].idx;
+    return opts.map(o =>
+      `<option value="${o.idx}" ${o.idx===sel?'selected':''}>${escapeHtml(o.label)}</option>`
+    ).join('');
   }
 
   function renderDiff(leftIdx, rightIdx) {
@@ -72,7 +73,13 @@ function showDiffModal(fieldName, snapshots) {
 
   // Build toolbar + content area
   const defaultLeft = 0;
-  const defaultRight = snapshots.length > 1 ? 1 : 0;
+  // 选择第一个与 defaultLeft 有差异的环境作为默认右侧
+  const defaultRight = (() => {
+    for (let i = 0; i < formatted.length; i++) {
+      if (i !== defaultLeft && formatted[i] !== formatted[defaultLeft]) return i;
+    }
+    return defaultLeft;
+  })();
   bodyEl.innerHTML = `
     <div class="diff-toolbar">
       <select class="form-control" id="diff-env-left" style="width:auto;min-width:160px;font-size:13px">${envOptions(defaultLeft)}</select>
@@ -87,20 +94,14 @@ function showDiffModal(fieldName, snapshots) {
   function onSelChange() {
     const li = parseInt(leftSel.value);
     const ri = parseInt(rightSel.value);
-    // 重建右侧下拉框，带上差异描述
-    rightSel.innerHTML = rightEnvOptions(li, ri);
-    if (li === parseInt(rightSel.value)) {
-      // 当前选中项被禁用了，自动选第一个非禁用项
-      for (const opt of rightSel.options) {
-        if (!opt.disabled) { rightSel.value = opt.value; break; }
-      }
-    }
-    const finalRi = parseInt(rightSel.value);
-    if (li === finalRi) {
-      bodyEl.querySelector('#diff-content').innerHTML = '<div class="diff-empty">请选择两个不同的环境进行比对</div>';
+    // 重建右侧下拉框（仅包含有差异的环境）
+    const optsHtml = rightEnvOptions(li, ri);
+    rightSel.innerHTML = optsHtml;
+    if (!optsHtml) {
+      bodyEl.querySelector('#diff-content').innerHTML = '<div class="diff-empty">当前环境与其他环境无差异</div>';
       return;
     }
-    renderDiff(li, finalRi);
+    renderDiff(li, parseInt(rightSel.value));
   }
 
   leftSel.addEventListener('change', onSelChange);

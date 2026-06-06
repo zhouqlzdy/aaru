@@ -5,12 +5,16 @@ import { toast, showLoading, escapeHtml } from '../utils.js';
 async function renderAdmin(body) {
   showLoading(body);
   try {
-    const [usersData, rolesData] = await Promise.all([
+    const [usersData, rolesData, notifData, envsData] = await Promise.all([
       api('/admin/users').catch(()=>({users:[]})),
-      api('/admin/roles').catch(()=>({roles:[]}))
+      api('/admin/roles').catch(()=>({roles:[]})),
+      api('/admin/notification-config').catch(()=>({aaru_domain:'',env_webhooks:{}})),
+      api('/environments').catch(()=>({envs:[]})),
     ]);
     const users = usersData.users||[];
     const roles = rolesData.roles||[];
+    const notifCfg = notifData;
+    const envs = envsData.envs||[];
 
     function accessDisplay(val) {
       if (!val) return '<span style="color:var(--text-muted)">未配置</span>';
@@ -39,6 +43,32 @@ async function renderAdmin(body) {
           <td>${escapeHtml(r.description||'')}</td>
           <td>${(r.permissions||[]).map(p=>`<span class="status-badge status-completed">${escapeHtml(p.action)}</span>`).join(' ')||'-'}</td>
         </tr>`).join('')||'<tr><td colspan="3" style="text-align:center;color:var(--text-muted)">暂无角色</td></tr>'}</tbody></table>
+      </div>
+    </div>
+    <div class="card" style="margin-top:24px">
+      <div class="card-header"><div class="card-title">🔔 机器人通知配置</div></div>
+      <div class="card-body">
+        <div class="form-group" style="max-width:400px;margin-bottom:16px">
+          <label class="form-label">Aaru 域名（用于生成审批链接）</label>
+          <input class="form-control" id="notif-domain" value="${escapeHtml(notifCfg.aaru_domain||'')}" placeholder="https://aaru.example.com">
+        </div>
+        <div style="font-size:13px;font-weight:600;margin-bottom:8px">环境 Webhook 配置</div>
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px">为环境配置 CCWork 机器人 Webhook 地址后，当发布进入该环境的审批节点时将自动发送通知。</div>
+        <table class="data-table">
+          <thead><tr><th>环境</th><th>Webhook URL</th></tr></thead>
+          <tbody>${envs.map(e=>{
+            const envCode = e.Env || e.name || e.Name || '';
+            const envName = e.name || e.Name || envCode;
+            const url = (notifCfg.env_webhooks||{})[envCode] || '';
+            return `<tr>
+              <td><strong>${escapeHtml(envName)}</strong><br><span style="font-size:11px;color:var(--text-muted)">${escapeHtml(envCode)}</span></td>
+              <td><input class="form-control notif-webhook-input" data-env="${escapeHtml(envCode)}" value="${escapeHtml(url)}" placeholder="https://..." style="font-size:12px"></td>
+            </tr>`;
+          }).join('')||'<tr><td colspan="2" style="color:var(--text-muted)">无环境数据</td></tr>'}</tbody>
+        </table>
+        <div style="margin-top:12px;text-align:right">
+          <button class="btn btn-primary" onclick="saveNotifConfig()">保存通知配置</button>
+        </div>
       </div>
     </div>`;
   } catch(e) { body.innerHTML = '<div class="empty-state"><p>加载失败: '+escapeHtml(e.message)+'</p></div>'; }
@@ -251,6 +281,20 @@ function showCreateRole() {
     .catch(e=>toast(e.message,'error'));
 }
 
+async function saveNotifConfig() {
+  const domain = document.getElementById('notif-domain')?.value?.trim() || '';
+  const webhooks = {};
+  document.querySelectorAll('.notif-webhook-input').forEach(input => {
+    const env = input.dataset.env;
+    const url = input.value.trim();
+    if (env && url) webhooks[env] = url;
+  });
+  try {
+    await api('/admin/notification-config', { method:'PUT', body:JSON.stringify({ aaru_domain: domain, env_webhooks: webhooks }) });
+    toast('通知配置已保存','success');
+  } catch(e) { toast(e.message,'error'); }
+}
+
 // Expose for inline onclick
 window.renderAdmin = renderAdmin;
 window.editUserAccess = editUserAccess;
@@ -261,5 +305,6 @@ window.showBatchImportUsers = showBatchImportUsers;
 window.batchImportFileLoad = batchImportFileLoad;
 window.batchImportSubmit = batchImportSubmit;
 window.showCreateRole = showCreateRole;
+window.saveNotifConfig = saveNotifConfig;
 
 export { renderAdmin };
