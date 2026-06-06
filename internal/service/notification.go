@@ -71,20 +71,20 @@ func (n *NotificationService) NotifyStageActivated(release *model.Release, stage
 
 	// 构建消息内容
 	var content strings.Builder
-	fmt.Fprintf(&content, "**发布单：**#%d %s\n", release.ID, release.Title)
-	fmt.Fprintf(&content, "**部署单元：**%s\n", release.DeployUnitCode)
-	fmt.Fprintf(&content, "**版本：**%s\n", release.Version)
-	fmt.Fprintf(&content, "**环境：**%s (%s)\n", stage.EnvName, stage.EnvCode)
-	fmt.Fprintf(&content, "**状态：**待审批\n\n")
+	fmt.Fprintf(&content, "发布单：#%d %s\n", release.ID, release.Title)
+	fmt.Fprintf(&content, "部署单元：%s\n", release.DeployUnitCode)
+	fmt.Fprintf(&content, "版本：%s\n", release.Version)
+	fmt.Fprintf(&content, "环境：%s (%s)\n", stage.EnvName, stage.EnvCode)
+	fmt.Fprintf(&content, "状态：待审批\n\n")
 
 	if len(approverNames) > 0 {
-		fmt.Fprintf(&content, "**可审批人：**%s\n", strings.Join(approverNames, "、"))
+		fmt.Fprintf(&content, "可审批人：%s\n", strings.Join(approverNames, "、"))
 	} else {
-		content.WriteString("**可审批人：**暂无（请在权限管理中配置）\n")
+		content.WriteString("可审批人：暂无（请在权限管理中配置）\n")
 	}
 
 	if approvalLink != "" {
-		fmt.Fprintf(&content, "\n[👉 前往审批](%s)", approvalLink)
+		fmt.Fprintf(&content, "\n👉 前往审批：%s", approvalLink)
 	}
 
 	title := fmt.Sprintf("🔔 %s — %s 环境待审批", release.Title, stage.EnvName)

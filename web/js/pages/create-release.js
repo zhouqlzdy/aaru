@@ -228,13 +228,13 @@ function crStep2() {
 
 window.crGoBack = function(step) {
   crStep = step;
-  crRenderStep(document.getElementById('content-body'));
+  try { crRenderStep(document.getElementById('content-body')); } catch(e) { toast('页面渲染失败: '+e.message,'error'); console.error(e); }
 };
 
 window.crGoStep3 = function() {
   crStep = 3;
   if (!crChanges.ArtifactVersion && crChanges.ArtifactVersion!=='') crChanges = { ArtifactVersion: '' };
-  crRenderStep(document.getElementById('content-body'));
+  try { crRenderStep(document.getElementById('content-body')); } catch(e) { toast('页面渲染失败: '+e.message,'error'); console.error(e); }
 };
 
 // ===== Step 3: Define Changes =====
@@ -484,7 +484,10 @@ function crUpdateNextBtn() {
 }
 
 // ===== Step 4: Preview =====
-window.crGoStep4Preview = function() { crStep = 4; crRenderStep(document.getElementById('content-body')); };
+window.crGoStep4Preview = function() {
+  crStep = 4;
+  try { crRenderStep(document.getElementById('content-body')); } catch(e) { toast('预览页渲染失败: '+e.message,'error'); console.error(e); }
+};
 
 function crResolveForEnv(fieldName, envCode) {
   if (crPerEnvMode.has(fieldName)) {

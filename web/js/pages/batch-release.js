@@ -15,43 +15,57 @@ let brFilterSystem = '';
 let brBlueprintEnvs = new Set();
 
 async function renderBatchRelease(body, actions) {
+  if (!body) body = document.getElementById('content-body');
+  // 重置状态
+  brStep = 1; brSelectedDUs = []; brSelectedBP = null; brNewVersion = ''; brTitle = ''; brSnapshots = {}; brFilterSilo = ''; brFilterSystem = ''; brBlueprintEnvs = new Set();
+  showLoading(body);
+  try { const d = await api('/du-list'); brDUList = d.deploy_units||[]; } catch(e) { brDUList = []; }
+  try { const d = await api('/blueprints'); brBlueprints = d.blueprints||[]; } catch(e) { brBlueprints = []; }
+  brRenderBody();
+}
+
+function brRenderBody() {
+  const body = document.getElementById('content-body');
+  const actions = document.getElementById('header-actions');
+  if (actions) actions.innerHTML = '';
   body.style.display = 'flex';
   body.style.flexDirection = 'column';
   body.style.overflow = 'hidden';
-  if (actions) actions.innerHTML = '';
+  const step = brStep;
   const steps = ['选择DU与蓝图','设置版本','预览'];
   const circles = steps.map((s,i)=>{
     const n = i+1;
-    const cls = n===brStep?'active':(n<brStep?'done':'');
-    const circle = `<div class="cr-wizard-step ${cls}"><div class="cr-wizard-num">${n<brStep?'✓':n}</div></div>`;
-    const line = i<steps.length-1?`<div class="cr-wizard-line ${n<brStep?'done':''}"></div>`:'';
+    const cls = n===step?'active':(n<step?'done':'');
+    const circle = `<div class="cr-wizard-step ${cls}"><div class="cr-wizard-num">${n<step?'✓':n}</div></div>`;
+    const line = i<steps.length-1?`<div class="cr-wizard-line ${n<step?'done':''}"></div>`:'';
     return circle + line;
   }).join('');
   const labels = steps.map((s,i)=>{
     const n = i+1;
-    const cls = n===brStep?'active':(n<brStep?'done':'');
+    const cls = n===step?'active':(n<step?'done':'');
     const col = `<div class="cr-wizard-step ${cls}"><div class="cr-wizard-label-col"><div class="cr-wizard-label">${s}</div></div></div>`;
     const space = i<steps.length-1?`<div class="cr-wizard-label-space"></div>`:'';
     return col + space;
   }).join('');
   const wizard = `<div class="cr-wizard"><div class="cr-wizard-circles">${circles}</div><div class="cr-wizard-labels">${labels}</div></div>`;
-  let step;
-  switch(brStep) {
-    case 1: step = brStep1(); break;
-    case 2: step = await brStep2(); break;
-    case 3: step = await brStep3(); break;
+  let html;
+  try {
+    switch(step) {
+      case 1: html = brStep1(); break;
+      case 2: html = brStep2(); break;
+      case 3: html = brStep3(); break;
+      default: html = brStep1();
+    }
+  } catch(e) {
+    console.error('brRenderBody error:', e);
+    toast('页面渲染失败: '+e.message, 'error');
+    html = { content: '<div class="empty-state"><p>渲染出错: '+escapeHtml(e.message)+'</p></div>', actions: '<button class="btn btn-secondary" onclick="loadPage(\'batch-release\')">重新开始</button>' };
   }
-  body.innerHTML = `<div style="display:flex;flex-direction:column;flex:1;min-height:0">${wizard}<div class="card" style="flex:1;min-height:0;display:flex;flex-direction:column"><div class="card-body" style="flex:1;min-height:0;overflow-y:auto">${step.content}</div></div><div class="cr-actions" style="flex-shrink:0">${step.actions}</div></div>`;
+  body.innerHTML = `<div style="display:flex;flex-direction:column;flex:1;min-height:0">${wizard}<div class="card" style="flex:1;min-height:0;display:flex;flex-direction:column"><div class="card-body" style="flex:1;min-height:0;overflow-y:auto">${html.content}</div></div><div class="cr-actions" style="flex-shrink:0">${html.actions}</div></div>`;
 }
 
 // Step 1: Select DUs + Blueprint
 function brStep1() {
-  if (brDUList.length === 0) {
-    api('/du-list').then(d => { brDUList = d.deploy_units||[]; if(brStep===1) renderBatchRelease(document.getElementById('content-body'), document.getElementById('header-actions')); });
-  }
-  if (brBlueprints.length === 0) {
-    api('/blueprints').then(d => { brBlueprints = d.blueprints||[]; if(brStep===1) renderBatchRelease(document.getElementById('content-body'), document.getElementById('header-actions')); });
-  }
 
   // 按用户权限过滤 DU 列表
   const permittedDUs = filterDUsByPermission(brDUList);
@@ -98,7 +112,7 @@ function brStep1() {
       </div>`,
     actions: `
       <button class="btn btn-secondary" onclick="loadPage('releases')">取消</button>
-      <button class="btn btn-primary" id="br-next1" onclick="brGoStep2()" ${brSelectedDUs.length>0&&brSelectedBP?'':'disabled'}>下一步: 设置版本 →</button>`
+      <button class="btn btn-primary" id="br-next1" onclick="if(!this.disabled)brGoStep2()" ${brSelectedDUs.length>0&&brSelectedBP?'':'disabled'}>下一步: 设置版本 →</button>`
   };
 }
 
@@ -126,12 +140,12 @@ window.brToggleDU = function(d) {
   const idx = brSelectedDUs.findIndex(s=>s.code===d.code);
   if (idx >= 0) brSelectedDUs.splice(idx, 1);
   else brSelectedDUs.push({code: d.code, system: d.system||'', silo: d.silo||''});
-  renderBatchRelease(document.getElementById('content-body'), document.getElementById('header-actions'));
+  brRenderBody();
 };
 
 window.brRemoveDU = function(code) {
   brSelectedDUs = brSelectedDUs.filter(d=>d.code!==code);
-  renderBatchRelease(document.getElementById('content-body'), document.getElementById('header-actions'));
+  brRenderBody();
 };
 
 window.brSelectBP = function(id) {
@@ -139,15 +153,26 @@ window.brSelectBP = function(id) {
   document.getElementById('br-next1').disabled = !(brSelectedDUs.length>0 && brSelectedBP);
 };
 
+window.brGoStep1 = function() {
+  brStep = 1;
+  brRenderBody();
+};
+
+window.brBackToStep = function(step) {
+  brStep = step;
+  brRenderBody();
+};
+
 window.brGoStep2 = async function() {
   if (!brSelectedDUs.length || !brSelectedBP) return;
   brTitle = document.getElementById('br-title')?.value || brTitle || ('批量升级 ' + brSelectedDUs.map(d=>d.code).join(', '));
-  brStep = 2;
   // 获取蓝图环境列表
   try {
     const bpDetail = await api('/blueprints/'+brSelectedBP.id);
     brBlueprintEnvs = new Set((bpDetail.nodes||[]).map(n=>n.env_code));
   } catch(e) { brBlueprintEnvs = new Set(); }
+  // 用户已离开此步骤，中止
+  if (brStep !== 1) return;
   // 预加载各DU的快照，只保留蓝图环境
   brSnapshots = {};
   await Promise.all(brSelectedDUs.map(async d => {
@@ -157,11 +182,14 @@ window.brGoStep2 = async function() {
       brSnapshots[d.code] = all.filter(s => brBlueprintEnvs.has(s.env));
     } catch(e) { brSnapshots[d.code] = []; }
   }));
-  renderBatchRelease(document.getElementById('content-body'), document.getElementById('header-actions'));
+  // 用户已离开此步骤，中止
+  if (brStep !== 1) return;
+  brStep = 2;
+  brRenderBody();
 };
 
 // Step 2: Set version
-async function brStep2() {
+function brStep2() {
   // 收集所有环境（取第一个DU的快照环境列表作为列头）
   const envOrder = [];
   const envSet = new Set();
@@ -194,7 +222,7 @@ async function brStep2() {
     content: `
       <div class="cr-section"><div class="cr-section-title">设置新版本</div>
         <div class="form-group"><label class="form-label">新 ArtifactVersion</label>
-          <input class="form-control" id="br-version" value="${escapeHtml(brNewVersion)}" placeholder="例: v2.3.0" oninput="brNewVersion=this.value;brUpdateNextBtn()" style="max-width:400px">
+          <input class="form-control" id="br-version" value="${escapeHtml(brNewVersion)}" placeholder="例: v2.3.0" oninput="brSetVersion(this.value)" style="max-width:400px">
           <div style="margin-top:8px;padding:8px 12px;background:#fef3c7;border-radius:6px;font-size:12px;color:#92400e">
             🔗 initDb / initDbAuth / initDbFinal / ImportData 中的代码仓库 URL tag 将随版本自动同步
           </div>
@@ -202,12 +230,13 @@ async function brStep2() {
       </div>
       <div class="cr-section"><div class="cr-section-title">各DU当前版本</div>${duInfoHTML}</div>`,
     actions: `
-      <button class="btn btn-secondary" onclick="brStep=1;renderBatchRelease(document.getElementById('content-body'),document.getElementById('header-actions'))">← 上一步</button>
+      <button class="btn btn-secondary" onclick="brGoStep1()">← 上一步</button>
       <button class="btn btn-primary" id="br-next2" onclick="brGoStep3()" ${brNewVersion?'':'disabled'}>下一步: 预览 →</button>`
   };
 }
 
-window.brUpdateNextBtn = function() {
+window.brSetVersion = function(val) {
+  brNewVersion = val;
   const btn = document.getElementById('br-next2');
   if (btn) btn.disabled = !brNewVersion;
 };
@@ -216,11 +245,11 @@ window.brGoStep3 = function() {
   brNewVersion = document.getElementById('br-version')?.value || brNewVersion;
   if (!brNewVersion) { toast('请填写新版本号','error'); return; }
   brStep = 3;
-  renderBatchRelease(document.getElementById('content-body'), document.getElementById('header-actions'));
+  brRenderBody();
 };
 
 // Step 3: Preview
-async function brStep3() {
+function brStep3() {
   const initDbFields = ['initDb','initDbAuth','initDbFinal','ImportData'];
   let totalEnvs = 0;
 
@@ -263,7 +292,7 @@ async function brStep3() {
       </div>
       <div class="cr-section"><div class="cr-section-title">各DU变更预览</div>${duPreviewHTML}</div>`,
     actions: `
-      <button class="btn btn-secondary" onclick="brStep=2;renderBatchRelease(document.getElementById('content-body'),document.getElementById('header-actions'))">← 上一步</button>
+      <button class="btn btn-secondary" onclick="brBackToStep(2)">← 上一步</button>
       <button class="btn btn-success" onclick="brSubmitBatch()">确认批量发布</button>`
   };
 }
