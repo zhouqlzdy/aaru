@@ -9,6 +9,7 @@ import (
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+	"gorm.io/gorm/schema"
 )
 
 type DBStore struct{ db *gorm.DB }
@@ -29,6 +30,9 @@ func NewDBStore(dsn string) (*DBStore, error) {
 
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Warn),
+		NamingStrategy: schema.NamingStrategy{
+			TablePrefix: "aaru_",
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -124,8 +128,8 @@ func (s *DBStore) UpdateUserAccess(userID uint, allowedSilos, allowedEnvs string
 
 // SetAdminWildcard 为所有 admin 角色用户设置 allowed_silos="*"
 func (s *DBStore) SetAdminWildcard() {
-	s.db.Exec(`UPDATE users SET allowed_silos = '*', allowed_envs = '*' WHERE (allowed_silos IS NULL OR allowed_silos = '') AND id IN (
-		SELECT user_id FROM user_roles WHERE role_id IN (SELECT id FROM roles WHERE name = 'admin')
+	s.db.Exec(`UPDATE aaru_users SET allowed_silos = '*', allowed_envs = '*' WHERE (allowed_silos IS NULL OR allowed_silos = '') AND id IN (
+		SELECT user_id FROM aaru_user_roles WHERE role_id IN (SELECT id FROM aaru_roles WHERE name = 'admin')
 	)`)
 }
 
