@@ -24,7 +24,7 @@ async function renderReleaseList(body, actions) {
       <div id="release-batch-bar" style="display:none;position:sticky;top:0;z-index:10;background:var(--bg,#fff);border:1px solid var(--border,#e5e7eb);border-radius:8px;padding:8px 12px;margin-bottom:8px;align-items:center;gap:12px">
         <span id="release-batch-count" style="font-size:13px;color:var(--text-muted)">已选 0 项</span>
         <button class="btn btn-sm btn-warning" onclick="batchDeprecateReleases()">批量废弃</button>
-        <button class="btn btn-sm btn-danger" onclick="batchDeleteReleases()">批量删除</button>
+        ${currentUser?.roles?.some(r=>r.name==='admin')?'<button class="btn btn-sm btn-danger" onclick="batchDeleteReleases()">批量删除</button>':''}
       </div>
       <div class="card"><table class="data-table"><thead><tr>
         <th style="width:36px"><input type="checkbox" id="release-check-all" onchange="toggleAllReleases(this)"></th>

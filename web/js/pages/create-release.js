@@ -15,6 +15,7 @@ let crBlueprintEnvs = new Set(); // 蓝图涉及的环境代码集合
 let crPerEnvMode = new Set(); // fields in per-env mode
 let crPerEnvVals = {};        // {fieldName: {envCode: val}}
 let crTitleAutoGen = true;    // 标题是否为自动生成（未被用户手动修改）
+let crDiffKeys = [];          // step2 中有差异的字段列表，用于带入 step3
 
 // All editable fields grouped
 const CR_SCALAR_FIELDS = [
@@ -42,7 +43,7 @@ const CR_FIELD_GROUPS = [
 async function renderCreateRelease(body, actions) {
   crStep = 1; crTitle = ''; crSelectedDU = null; crSnapshots = [];
   crChanges = {}; crExtraFields = []; crSelectedBP = null; crBlueprintEnvs = new Set();
-  crPerEnvMode = new Set(); crPerEnvVals = {}; crTitleAutoGen = true;
+  crPerEnvMode = new Set(); crPerEnvVals = {}; crTitleAutoGen = true; crDiffKeys = [];
   body.style.overflow = 'hidden';
   body.style.display = 'flex';
   body.style.flexDirection = 'column';
@@ -196,6 +197,7 @@ function crStep2() {
       const vals = crSnapshots.map(s=>String((s.fields||{})[k]??''));
       return new Set(vals).size > 1;
     }).sort();
+    crDiffKeys = diffKeys;
     if (diffKeys.length === 0) {
       tableHTML = '<div class="empty-state"><p>所有环境配置一致，无差异</p></div>';
     } else {
@@ -234,6 +236,15 @@ window.crGoBack = function(step) {
 window.crGoStep3 = function() {
   crStep = 3;
   if (!crChanges.ArtifactVersion && crChanges.ArtifactVersion!=='') crChanges = { ArtifactVersion: '' };
+  // 将 step2 中有差异的字段自动带入变更列表
+  if (crDiffKeys.length > 0) {
+    crDiffKeys.forEach(f => {
+      if (f !== 'ArtifactVersion' && !crExtraFields.includes(f)) {
+        crExtraFields.push(f);
+        if (!(f in crChanges)) crChanges[f] = '';
+      }
+    });
+  }
   try { crRenderStep(document.getElementById('content-body')); } catch(e) { toast('页面渲染失败: '+e.message,'error'); console.error(e); }
 };
 
