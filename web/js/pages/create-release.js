@@ -591,11 +591,13 @@ function crStep4Preview() {
       <div class="cr-section"><div class="cr-section-title">各环境变更预览</div>${envsHTML||'<div class="empty-state"><p>无环境数据</p></div>'}</div>`,
     actions: `
       <button class="btn btn-secondary" onclick="crGoBack(3)">← 上一步</button>
-      <button class="btn btn-success" onclick="crSubmitRelease()">确认创建发布</button>`
+      <button class="btn btn-success" id="cr-submit-btn" onclick="crSubmitRelease()">确认创建发布</button>`
   };
 }
 
 window.crSubmitRelease = async function() {
+  const btn = document.getElementById('cr-submit-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '创建中...'; }
   // 收集所有有变更的字段（统一模式 + 按环境模式）
   const changes = {};
 
@@ -631,10 +633,10 @@ window.crSubmitRelease = async function() {
     }
   });
 
-  if (Object.keys(changes).length===0) { toast('请至少填写一个变更字段','error'); return; }
+  if (Object.keys(changes).length===0) { toast('请至少填写一个变更字段','error'); if (btn) { btn.disabled = false; btn.textContent = '确认创建发布'; } return; }
   // 检查 ArtifactVersion 是否有值
   const av = changes.ArtifactVersion;
-  if (!av || (typeof av==='object' && Object.keys(av).length===0)) { toast('ArtifactVersion为必填项','error'); return; }
+  if (!av || (typeof av==='object' && Object.keys(av).length===0)) { toast('ArtifactVersion为必填项','error'); if (btn) { btn.disabled = false; btn.textContent = '确认创建发布'; } return; }
 
   // initDb tag 自动同步：如果 ArtifactVersion 有变更且用户未手动修改 initDb 类字段，
   // 自动将各环境 initDb/initDbAuth/initDbFinal 中的 URL tag 替换为新版本
@@ -670,7 +672,7 @@ window.crSubmitRelease = async function() {
     toast('发布单创建成功','success');
     crStep=1; crChanges={}; crExtraFields=[]; crPerEnvMode=new Set(); crPerEnvVals={};
     loadPage('releases');
-  } catch(e) { toast(e.message,'error'); }
+  } catch(e) { toast(e.message,'error'); if (btn) { btn.disabled = false; btn.textContent = '确认创建发布'; } }
 };
 
 export { renderCreateRelease };

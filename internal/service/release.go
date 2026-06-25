@@ -763,7 +763,7 @@ func (r *ReleaseService) DeprecateRelease(releaseID, userID uint) (*model.Releas
 	return release, nil
 }
 
-// DeleteRelease 删除已废弃的发布（仅 admin，废弃后一周内可操作）
+// DeleteRelease 删除发布：admin 可删除已废弃的发布（一周内），创建者可删除草稿或已废弃的发布（一周内）
 func (r *ReleaseService) DeleteRelease(releaseID, userID uint) error {
 	release, err := r.store.GetRelease(releaseID)
 	if err != nil {
@@ -772,24 +772,36 @@ func (r *ReleaseService) DeleteRelease(releaseID, userID uint) error {
 		}
 		return fmt.Errorf("get release: %w", err)
 	}
-	if release.Status != "deprecated" {
-		return fmt.Errorf("only deprecated releases can be deleted")
-	}
-	if release.DeprecatedAt == nil {
-		return fmt.Errorf("release has no deprecated timestamp")
-	}
-	if time.Since(*release.DeprecatedAt) > 7*24*time.Hour {
-		return fmt.Errorf("deprecation window expired (7 days), cannot delete")
-	}
-	// 仅 admin 可删除
 	user, err := r.store.GetUserWithRoles(userID)
 	if err != nil {
 		return fmt.Errorf("get user: %w", err)
 	}
-	if !hasRole(user, "admin") {
-		return fmt.Errorf("permission denied: only admin can delete releases")
+	isAdmin := hasRole(user, "admin")
+	isCreator := release.CreatedByID == userID
+
+	if release.Status == "draft" {
+		// 草稿：创建者可删除
+		if !isCreator {
+			return fmt.Errorf("permission denied: only creator can delete draft releases")
+		}
+		return r.store.DeleteRelease(releaseID)
 	}
-	return r.store.DeleteRelease(releaseID)
+
+	if release.Status == "deprecated" {
+		if release.DeprecatedAt == nil {
+			return fmt.Errorf("release has no deprecated timestamp")
+		}
+		if time.Since(*release.DeprecatedAt) > 7*24*time.Hour {
+			return fmt.Errorf("deprecation window expired (7 days), cannot delete")
+		}
+		// 已废弃：admin 或创建者可删除
+		if !isAdmin && !isCreator {
+			return fmt.Errorf("permission denied: only admin or creator can delete deprecated releases")
+		}
+		return r.store.DeleteRelease(releaseID)
+	}
+
+	return fmt.Errorf("only draft or deprecated releases can be deleted")
 }
 
 // WebhookPromote 通过webhook token自动晋级（由外部系统调用）

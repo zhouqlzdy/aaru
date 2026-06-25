@@ -293,11 +293,13 @@ function brStep3() {
       <div class="cr-section"><div class="cr-section-title">各DU变更预览</div>${duPreviewHTML}</div>`,
     actions: `
       <button class="btn btn-secondary" onclick="brBackToStep(2)">← 上一步</button>
-      <button class="btn btn-success" onclick="brSubmitBatch()">确认批量发布</button>`
+      <button class="btn btn-success" id="br-submit-btn" onclick="brSubmitBatch()">确认批量发布</button>`
   };
 }
 
 window.brSubmitBatch = async function() {
+  const btn = document.getElementById('br-submit-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '创建中...'; }
   try {
     const data = await api('/batch-releases', {
       method: 'POST',
@@ -311,7 +313,7 @@ window.brSubmitBatch = async function() {
     toast(`批量发布成功，已创建 ${data.count||0} 个发布单`, 'success');
     brStep = 1; brSelectedDUs = []; brSelectedBP = null; brNewVersion = ''; brTitle = ''; brSnapshots = {}; brFilterSilo = ''; brFilterSystem = ''; brBlueprintEnvs = new Set();
     loadPage('releases');
-  } catch(e) { toast(e.message, 'error'); }
+  } catch(e) { toast(e.message, 'error'); if (btn) { btn.disabled = false; btn.textContent = '确认批量发布'; } }
 };
 
 window.renderBatchRelease = renderBatchRelease;
