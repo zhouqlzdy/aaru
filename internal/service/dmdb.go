@@ -371,10 +371,7 @@ func tryCollapseInitKey(snapshots []model.DUConfigSnapshot, key string) bool {
 			s.Fields[key+"_Note"] = summary + " | 当前环境: " + s.EnvName + " tag=" + av
 		}
 	}
-	// 移除原始Init字段
-	for i := range snapshots {
-		delete(snapshots[i].Fields, key)
-	}
+	// 保留原始Init字段（不删除），前端自动同步 initDb tag 需要原始数据
 	return true
 }
 

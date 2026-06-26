@@ -186,12 +186,17 @@ function crStep2() {
   if (crSnapshots.length === 0) {
     tableHTML = '<div class="empty-state"><p>未在任何DMDB环境中找到此部署单元</p></div>';
   } else {
-    // 收集所有字段（排除展开的子行和只读字段）
+    // 收集所有字段（排除展开的子行、只读字段、已有 _Note 摘要的原始字段）
     const allKeys = new Set();
     crSnapshots.forEach(s => {
       if(s.fields) Object.keys(s.fields).forEach(k => {
         if(!CR_READONLY_FIELDS.has(k) && !k.includes('[')) allKeys.add(k);
       });
+    });
+    // 如果某字段存在对应的 _Note 摘要（如 initDb → initDb_Note），隐藏原始 JSON 字段
+    [...allKeys].forEach(k => {
+      if (k.endsWith('_Note')) return;
+      if (allKeys.has(k + '_Note')) allKeys.delete(k);
     });
     // 只保留有差异的字段
     const diffKeys = [...allKeys].filter(k => {
@@ -565,7 +570,7 @@ function crStep4Preview() {
     envsHTML = crSnapshots.map(s=>{
       const { merged, autoUpdated } = crResolveEnvChanges(s.env, s.fields);
       const rows = Object.keys(merged).filter(k=>{
-        if (CR_READONLY_FIELDS.has(k) || k.includes('[')) return false;
+        if (CR_READONLY_FIELDS.has(k) || k.includes('[') || k.endsWith('_Note')) return false;
         const orig = (s.fields||{})[k], nv = merged[k];
         return String(orig??'') !== String(nv??'');
       }).map(k=>{
